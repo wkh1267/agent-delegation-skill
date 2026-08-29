@@ -1,8 +1,8 @@
 # Nemotron Worker
 
 Install OpenCode. The wrapper loads `api_key` from the ignored `.env` beside
-`opencode.json` and keeps OpenCode runtime under the system temp directory;
-never commit `.env`.
+`opencode.json` and keeps all delegated-worker OpenCode state under one runtime
+directory; never commit `.env`.
 
 ```powershell
 npm install -g opencode-ai
@@ -20,12 +20,42 @@ Use the build agent only when the task explicitly permits changes:
 & "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" --agent build --dir "<project-path>" "<task>"
 ```
 
-List sessions, then reuse one when the worker-memory policy calls for continuity:
+## Session reuse
+
+Always list delegated-worker sessions through the wrapper so OpenCode reads the
+same XDG data/state directories that the wrapper used when creating them:
 
 ```powershell
-opencode session list
+& "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" sessions
+```
+
+For machine-readable output:
+
+```powershell
+& "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" sessions --format json
+```
+
+Reuse a session when `worker-memory.md` calls for continuity:
+
+```powershell
 & "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" --agent <plan-or-build> --dir "<project-path>" --session <session-id> "<task>"
 ```
+
+Do not use a bare `opencode session list` for delegated-worker discovery unless
+you have manually reproduced the wrapper's runtime environment; otherwise it may
+look at a different OpenCode data directory.
+
+## Read-only resynchronization
+
+The `plan` agent cannot edit files. It may use only narrowly scoped read-only Git
+commands (`git status`, `git log`, `git diff`, `git show`, and `git rev-parse`) in
+addition to normal read/search tools. Use these commands to compare the reused
+Worker's last-known repository state with current HEAD before trusting stale
+working memory.
+
+The current V0.1 runtime does not yet persist `last_sync_commit` automatically,
+so the Lead/Worker must carry or rediscover the relevant previous commit until a
+Worker registry lands.
 
 Nemotron reasoning is enabled by the model default; no custom request-body
 fields are required.
