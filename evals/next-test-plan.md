@@ -112,7 +112,7 @@ At minimum verify that Codex can actually load:
 
 ```text
 implement
- tdd
+tdd
 code-review
 ```
 
@@ -155,22 +155,25 @@ Before any real NIM call:
 4. confirm no credential-shaped value exists outside ignored secret storage;
 5. do not allow a general build Worker to mutate credential-loading/protocol adapter code.
 
-PowerShell checks:
+A repository-local preflight script performs the non-secret checks without requiring `rg` and never prints the API key value:
 
 ```powershell
-git status --short
-git diff
-
-Get-ChildItem -Recurse -File |
-  Where-Object {
-    $_.FullName -notmatch '\\.git\\' -and
-    $_.FullName -notlike '*\skills\delegating-work\.env'
-  } |
-  Select-String -Pattern 'nvapi-' -List |
-  Select-Object -ExpandProperty Path
+powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1
 ```
 
-All three should produce no unexpected output before a real Worker test.
+For the controlled Phase B run, require the eval workflow junction too:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireEvalWorkflow
+```
+
+For Phase C, require the Matt workflows too:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireMattWorkflows
+```
+
+`PREFLIGHT: PASS` is required before proceeding to the corresponding real Worker/integration test.
 
 ## Repository / Codex preflight
 
@@ -191,21 +194,17 @@ Expected branch:
 feat/delegent-v0.1
 ```
 
-Verify the core Delegent skills are visible to Codex before Phase B:
+Before Phase B, expose the controlled workflow alongside the two core skills:
 
 ```powershell
-Test-Path "$HOME\.agents\skills\delegent\SKILL.md"
-Test-Path "$HOME\.agents\skills\delegating-work\SKILL.md"
-Test-Path "$HOME\.agents\skills\delegent-eval-workflow\SKILL.md"
+New-Item -ItemType Junction `
+  -Path "$HOME\.agents\skills\delegent-eval-workflow" `
+  -Target "D:\wkh12\LEARNING\Development\agent-delegation-skills\skills\delegent-eval-workflow"
 ```
 
-For Phase C only, also verify the selected Matt workflow installation (actual installed paths are authoritative):
+If the junction already exists and points to the correct target, do not recreate it.
 
-```text
-implement
-tdd
-code-review
-```
+For Phase C only, install/verify the selected Matt workflows (`implement`, `tdd`, `code-review`) using their actual installed skill paths as authoritative.
 
 If an explicitly selected workflow is unavailable, Delegent must fail fast instead of reconstructing or approximating its semantics.
 
