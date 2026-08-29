@@ -1,43 +1,55 @@
-# Migration Spec: Switchyard-Inspired Delegation Architecture
+# Migration Spec: Switchyard-Inspired Patterns for Delegent
 
 ## 1. Purpose
 
-本文件定義哪些 NVIDIA NeMo Switchyard 設計應借鑑到我們的 `delegating-work` 系統，以及如何調整成：
+This document records **which NVIDIA NeMo Switchyard design patterns Delegent borrows, adapts, or explicitly rejects**, and maps each borrowed idea to concrete Switchyard source code.
+
+This is a provenance and migration-design document, not the authoritative product spec.
+
+Authoritative requirements live in:
 
 ```text
-Codex / GPT-5.6 Sol
-        │
-        │ strategic lead
-        ▼
-delegating-work
-        │
-        ├── Lead-owned decision
-        │
-        └── Delegated work
-                │
-                ▼
-             OpenCode
-                │
-                ▼
-             Nemotron
+spec.md
 ```
 
-核心原則：
+The integrated architecture is:
 
-> **借 Switchyard 已驗證過的 routing / affinity / escalation patterns，但不搬它的 model-proxy architecture。**
+```text
+User
+  │
+  │ $delegent $implement
+  ▼
+Delegent                         ← orchestration layer
+  │
+  ├─ selected workflow
+  │
+  └─ delegating-work             ← work-unit placement policy
+          │
+          ├─ Lead
+          │    Codex / Sol
+          │
+          └─ Worker
+               OpenCode
+                 │
+               Nemotron
+```
 
-Switchyard 解的是 LLM/model routing；我們主要解的是：
-
-> **work-unit ownership + context isolation + worker memory reuse。**
+Switchyard is not used as a runtime dependency in V0.1. We borrow its **subagent identity, affinity, escalation, signal, lifecycle, and decision-provenance patterns** where they strengthen our architecture.
 
 ---
 
-# 2. Source Repository
+## 2. Upstream Source Snapshot
 
-Upstream:
+Repository:
 
 ```text
 NVIDIA-NeMo/Switchyard
+```
+
+Source snapshot reviewed for this document:
+
+```text
+commit: 27fc1ce9ff3846760337fe42ab09c28f5b01c807
 ```
 
 License:
@@ -46,52 +58,76 @@ License:
 Apache-2.0
 ```
 
-目前 Switchyard 自己仍標示為 pre-alpha，因此此 migration 以 **design borrowing** 為主，不將其 runtime 當 dependency。
+Switchyard currently describes itself as pre-alpha overall, with different maturity levels across components. We therefore treat it primarily as a design/reference source.
 
-若未來直接複製或衍生 source code，必須遵守 Apache-2.0 attribution/license requirements。
-
----
-
-# 3. Migration Summary
-
-| Switchyard concept                      | 我們                           | Action                           |
-| --------------------------------------- | ---------------------------- | -------------------------------- |
-| Subagent detection                      | 判斷 delegated work            | **ADOPT**                        |
-| Parent vs child routing                 | Lead vs Worker               | **ADOPT**                        |
-| Affinity                                | Persistent worker reuse      | **ADOPT + EXTEND**               |
-| Session + agent identity                | Worker identity              | **ADAPT**                        |
-| Assignment pinning                      | Worker session reuse         | **ADOPT**                        |
-| Subagent prompt isolation               | Worker task contract         | **ADOPT**                        |
-| Escalation streak                       | Worker → Lead escalation     | **ADOPT**                        |
-| Trajectory judge                        | Worker-health evaluation     | **ADAPT**                        |
-| Tool signals                            | worker-health signals        | **ADAPT**                        |
-| Decision source telemetry               | delegation observability     | **ADOPT**                        |
-| Context overflow fallback               | worker rotation / escalation | **ADAPT**                        |
-| Stage model routing                     | strong/weak per-turn routing | **DO NOT MIGRATE V0.1**          |
-| API protocol proxy                      | Responses ↔ Chat translation | **DO NOT MIGRATE V0.1**          |
-| Model switching inside one conversation | shared-context routing       | **REJECT for core architecture** |
+If future implementation copies or derives source code rather than independently implementing the pattern, preserve the required Apache-2.0 attribution/license obligations and re-check the upstream file at the pinned/relevant revision.
 
 ---
 
-# 4. Migration 1 — Separate Assignment Policy From Memory Policy
+## 3. Integration Rule
 
-## Switchyard design
+The previous version of this document treated `delegating-work` as the top-level system. That is no longer the product model.
 
-Switchyard 有一個非常值得直接採用的 separation：
+Use this separation:
+
+```text
+Delegent
+→ owns orchestration and selected workflow completion
+
+delegating-work
+→ decides Lead vs Worker placement and safe parallelism
+
+worker-memory / Worker registry
+→ decides which Worker context and how long it remains assigned
+
+Worker adapter
+→ invokes OpenCode/Nemotron
+
+migration-spec.md
+→ records external design provenance
+```
+
+A Switchyard idea should migrate only when it supports one of these layers without destroying the Context Firewall.
+
+---
+
+## 4. Migration Summary
+
+| Switchyard concept | Delegent equivalent | Decision | Target layer | Current status |
+| --- | --- | --- | --- | --- |
+| Parent vs delegated child routing | Lead vs Worker distinction | **ADOPT / ADAPT** | `delegating-work` | policy implemented |
+| Subagent work detection | delegated task vs maintenance | **ADOPT** | Worker runtime | planned |
+| Affinity | persistent Worker reuse | **ADOPT + EXTEND** | worker memory/registry | policy implemented; runtime pending |
+| Session + agent identity | stable Worker identity | **ADAPT** | Worker registry | pending |
+| Assignment pinning | reuse work-thread Worker | **ADOPT** | worker memory/registry | policy implemented; runtime pending |
+| Prompt-only child classification | compact dispatch contract | **ADOPT** | Worker contract | partly implemented |
+| Escalation streak | repeated-failure escalation | **ADAPT** | escalation policy | pending |
+| Trajectory condensation | compressed escalation | **ADOPT** | Worker contract | hard escalation implemented; trajectory form pending |
+| Deterministic tool signals | Worker-health signals | **ADAPT** | future runtime | pending |
+| Decision-source telemetry | delegation provenance | **ADOPT** | observability | pending |
+| Session lifecycle/TTL | Worker lifecycle/retirement | **ADAPT** | Worker registry | pending |
+| Context-window fallback | Worker rotation/escalation | **ADAPT conceptually** | future runtime | pending |
+| Stage strong/weak routing | per-turn model routing | **DO NOT MIGRATE V0.1** | below Worker layer | rejected for core |
+| API protocol proxy | model API translation | **DO NOT MIGRATE V0.1** | optional future model-router layer | out of scope |
+| Shared-conversation model switching | same trajectory served by different models | **REJECT for core architecture** | n/a | rejected |
+
+---
+
+# 5. Migration 1 — Separate Placement Policy From Affinity Policy
+
+## Switchyard pattern
+
+Switchyard deliberately separates:
 
 ```text
 SubagentOverride
-→ decides WHICH target
+→ which target delegated work belongs on
 
 AffinityRouter
-→ decides HOW LONG that choice survives
+→ how long a selected target remains associated with an identity
 ```
 
-它的 source comment 甚至直接說：
-
-> override decides which target delegated work belongs on; affinity decides how long a decision lives.
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/subagent.rs
@@ -101,461 +137,283 @@ Key symbols:
 - SubagentGate
 ```
 
-以及：
-
 ```text
 crates/libsy/src/algorithms/util/affinity.rs
 
 Key symbols:
 - AffinityRouter
 - AffinityRouter::for_subagents()
+- affinity_key()
 - retention_key()
 ```
 
-官方 integration tests 更直接驗證：
-
-```text
-override seeds assignment
-        ↓
-affinity remembers assignment
-        ↓
-later turns reuse it
-```
-
-Source:
+Integration behavior is tested in:
 
 ```text
 crates/libsy/src/algorithms/subagent_affinity_tests.rs
+
+Notable tests:
+- the_override_seeds_a_pin_that_affinity_replays
+- the_pin_outlives_the_policy_that_seeded_it
+- distinct_children_are_pinned_independently
 ```
 
----
+## Delegent migration
 
-## Migration
-
-我們保持相同 separation：
+Keep these decisions separate:
 
 ```text
-routing-policy.md
-      │
-      │ decides WHERE work belongs
-      ▼
-Lead / Worker
-      │
-      ▼
-worker-memory.md
-      │
-      │ decides WHICH worker context
-      ▼
-existing / fresh
+delegating-work / routing-policy
+→ Lead or Worker?
+
+worker-memory / registry
+→ Existing Worker or fresh Worker?
+→ How long should this assignment survive?
 ```
+
+Do not merge Worker-reuse rules into Lead-vs-Worker placement logic.
 
 ### Target files
 
+Current:
+
 ```text
-delegating-work/
-└── references/
-    ├── routing-policy.md
-    └── worker-memory.md
+skills/delegating-work/references/routing-policy.md
+skills/delegating-work/references/worker-memory.md
 ```
 
-**禁止把 worker reuse rules 寫進 routing-policy。**
+Future runtime:
 
-這兩件事是不同 decision。
+```text
+Worker registry / session adapter
+```
 
 ---
 
-# 5. Migration 2 — Distinguish Delegated Work From Subagent Maintenance
+# 6. Migration 2 — Distinguish Delegated Work From Subagent Maintenance
 
-這是 Switchyard 一個很細但非常好的設計。
+## Switchyard pattern
 
-它不是看到：
+Switchyard distinguishes child lineage from actual delegated work. A child-related request may be maintenance rather than a new delegated engineering task.
+
+The code recognizes Codex delegated-work kinds such as:
 
 ```text
-is_subagent = true
+x-openai-subagent: review
+x-openai-subagent: collab_spawn
 ```
 
-就直接當成 worker task。
-
-因為 Codex 可能存在：
+while a maintenance operation such as:
 
 ```text
 x-openai-subagent: compact
 ```
 
-這代表 subagent lineage / maintenance，但不是新的 delegated work。
+is intentionally not forced through the delegated-work path.
 
-Switchyard因此區分：
-
-```text
-is_subagent
-vs
-is_subagent_work
-```
-
-例如：
-
-```text
-review
-collab_spawn
-→ delegated work
-
-compact
-→ maintenance
-```
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/subagent.rs
 
-SubagentOverride::score()
-SubagentGate::score()
+Key logic:
+- Metadata::is_subagent_work checks
+- SubagentGate::score()
+- SubagentOverride::score()
 ```
 
-Integration test：
-
-```text
-harness_maintenance_turns_are_not_forced_to_the_worker
-```
-
-位於：
+Tests:
 
 ```text
 crates/libsy/src/algorithms/subagent_affinity_tests.rs
+
+- harness_maintenance_turns_are_not_forced_to_the_worker
 ```
 
----
+## Delegent migration
 
-## Migration
-
-我們也必須區分：
+The Worker runtime should eventually classify operations such as:
 
 ```text
-WORKER OPERATION
-│
-├── delegated task
-├── continuation
-├── sync
-├── compact
-├── memory maintenance
-└── shutdown
-```
-
-只有：
-
-```text
-delegated task
+delegated_task
 continuation
-```
-
-需要重新進 routing/worker execution flow。
-
-像：
-
-```text
 sync
 compact
-memory maintenance
+memory_maintenance
+shutdown
 ```
 
-不應被誤判成新的 engineering task。
+Only actual task execution or continuation should be treated as delegated engineering work.
+
+`sync`, `compact`, registry maintenance, and shutdown must not accidentally trigger a new routing/workflow decision.
 
 ---
 
-# 6. Migration 3 — Worker Identity / Affinity
+# 7. Migration 3 — Stable Worker Identity
 
-## Switchyard design
+## Switchyard pattern
 
-Switchyard 不單純以 session ID 判斷 child。
+For delegated child work, affinity is keyed more finely than a root session. The design uses stable correlation metadata so sibling children do not inherit each other's assignment.
 
-它對 subagent 使用：
-
-```text
-session + agent
-```
-
-作為 identity。
-
-因此：
-
-```text
-session-1 / child-1
-→ worker
-
-session-1 / child-2
-→ reviewer
-```
-
-兩者 assignment 可以獨立。
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/affinity.rs
+
+Key symbols:
+- AffinityRouter::affinity_key()
+- retention_key()
 ```
 
-`AffinityRouter::affinity_key()`：
-
-* root → session identity
-* child → session + agent identity
-* child 沒有完整 identity 時，不 fallback 到 message hash
-
-對應 test：
-
-```text
-distinct_children_are_pinned_independently
-```
-
-Source:
+The behavior is exercised in:
 
 ```text
 crates/libsy/src/algorithms/subagent_affinity_tests.rs
+
+- distinct_children_are_pinned_independently
 ```
 
----
+## Delegent migration
 
-## Migration
+A raw OpenCode `session_id` is insufficient as our durable abstraction.
 
-我們不能只使用：
-
-```text
-OpenCode session_id
-```
-
-而應建立：
+Target identity:
 
 ```text
 WorkerIdentity {
-    project
-    role
-    scope
-    worker_id
-    session_id
-    last_sync_commit
+  project
+  role
+  scope
+  worker_id
+  session_id
+  last_sync_commit
+  last_task
+  status
+  last_used_at
 }
 ```
 
-例如：
+Example:
 
 ```text
-project:
-personal-assistant-backend
+project: personal-assistant-backend
+role: implementation
+scope: scheduler
+worker_id: scheduler-primary
+session_id: <opencode-session-id>
+last_sync_commit: 92ac371
+status: active
+```
 
-role:
-implementation
+This lets one project hold independent contexts such as:
 
-scope:
-scheduler
-
-worker_id:
+```text
 scheduler-primary
-
-session_id:
-opencode-abc123
-
-last_sync_commit:
-92ac371
+auth-primary
+scheduler-reviewer
+security-reviewer
 ```
 
-這使：
-
-```text
-scheduler worker
-auth worker
-independent reviewer
-```
-
-可以在同一 project 中同時存在。
+without confusing session continuity with task identity.
 
 ---
 
-# 7. Migration 4 — First Assignment Wins / Worker Pinning
+# 8. Migration 4 — Assignment Pinning
 
-Switchyard affinity 的重要特性：
+## Switchyard pattern
 
-> first assignment wins.
+Once an affinity assignment is seeded, later requests with the same identity replay that assignment before consulting a later policy.
 
-當 child 第一次被 assign：
-
-```text
-child-1 → worker
-```
-
-後續即使 routing policy 改變：
+### Source code
 
 ```text
-policy now says reviewer
+crates/libsy/src/algorithms/util/affinity.rs
+
+Core state:
+- assignments: HashMap<RoutingIdentity, ModelId>
 ```
 
-同一 child 仍然：
-
-```text
-child-1 → worker
-```
-
-直到 affinity 被清除。
-
-### Source Code
-
-```text
-AffinityRouter
-
-assignments:
-HashMap<RoutingIdentity, ModelId>
-```
-
-以及：
-
-```text
-the_pin_outlives_the_policy_that_seeded_it
-```
-
-Source:
+Tests:
 
 ```text
 crates/libsy/src/algorithms/subagent_affinity_tests.rs
+
+- the_override_seeds_a_pin_that_affinity_replays
+- the_pin_outlives_the_policy_that_seeded_it
 ```
 
----
+## Delegent migration
 
-## Migration
+Adopt this principle:
 
-我們採用：
+> Once a work thread owns a useful Worker context, reuse it until an explicit invalidation condition fires.
 
-> **Once a work thread owns a worker context, reuse it unless a specific invalidation condition fires.**
-
-不要每一 turn 重新問：
+Invalidation conditions include:
 
 ```text
-Should scheduler task use worker A or B?
-```
-
-而是：
-
-```text
-scheduler implementation
-        ↓
-scheduler-primary
-        ↓
-reuse
-        ↓
-reuse
-        ↓
-reuse
-```
-
-Invalidation conditions：
-
-```text
-worker context stale
-worker context confused
-context near practical limit
-task scope changed substantially
+context stale beyond cheap resync
+context confused or contradictory
+context near practical quality/size limit
+scope changed substantially
 independent judgment required
-explicit fresh-worker request
+explicit fresh-Worker request
+Worker retired/invalid
 ```
+
+This avoids re-paying repository exploration on every follow-up task.
 
 ---
 
-# 8. Migration 5 — Classify Only the Delegated Prompt
+# 9. Migration 5 — Route/Dispatch Only the Delegated Task
 
-Switchyard 的 `SubagentGate` 不把整份 coding-agent conversation 給 classifier。
+## Switchyard pattern
 
-它會從 request 中抽：
+`SubagentGate` constructs a prompt-only request for the delegated classifier rather than exposing the entire coding-agent harness trajectory.
 
-```text
-last non-empty user task
-```
-
-建立新的 prompt-only request。
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/subagent.rs
 
-fn delegated_prompt_request(...)
+Key function:
+- delegated_prompt_request(...)
 ```
 
-這避免 classifier 被：
+The implementation extracts the relevant delegated user prompt and gives the classifier a compact request clone.
 
-```text
-system prompt
-harness reminders
-大量歷史 context
-tool traces
-```
+## Delegent migration
 
-污染。
+Delegent should dispatch a compact Worker task rather than copying the Lead's entire conversation.
 
----
-
-## Migration
-
-我們的 routing decision 同樣只應該看到：
+Target contract:
 
 ```text
 TASK
-CONSTRAINTS
-CURRENT DECISIONS
-WORKER STATE SUMMARY
-```
-
-而不是把 Lead 的完整 conversation 傳給 routing logic。
-
-Worker dispatch contract：
-
-```text
-TASK
-What needs to be accomplished.
-
 SCOPE
-Relevant subsystem / boundaries.
-
 DECISIONS
-Already-fixed architectural decisions.
-
+CONSTRAINTS
 FORBIDDEN
-Things worker may not decide/change.
-
 SUCCESS
-Observable completion criteria.
 ```
 
-這同時降低：
+The current `worker-contract.md` already moves in this direction. Future runtime code should make this an explicit dispatch object/structure rather than relying only on prose discipline.
 
-```text
-routing token cost
-worker startup context
-accidental Lead-context leakage
-```
+Benefits:
+
+- protects the Context Firewall in both directions;
+- avoids accidental Lead-history leakage;
+- reduces Worker startup noise;
+- makes routing and Worker execution easier to test.
 
 ---
 
-# 9. Migration 6 — Escalation Should Depend on Trajectory, Not Task Size
+# 10. Migration 6 — Escalate From Observed Trajectory, Not Apparent Task Size
 
-這是 Switchyard 最值得借的第二大 idea。
+## Switchyard pattern
 
-它不只做：
+Switchyard's escalation router lets the efficient target execute first, then evaluates the completed trajectory and accumulates an escalation streak.
 
-```text
-"這個 task 看起來難"
-→ strong
-```
-
-它還做：
-
-```text
-先讓 weak 做
-      ↓
-觀察實際 trajectory
-      ↓
-卡住了嗎？
-      ↓
-escalate
-```
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/escalation.rs
@@ -564,224 +422,171 @@ Key symbols:
 - EscalationClassifier
 - STREAK_KEY
 - streak()
+- build_classifier(...)
 ```
 
-它的 flow：
+The essential behavior is:
 
 ```text
-efficient executes
-       ↓
-judge evaluates actual result
-       ↓
-escalate?
-       │
-       ├─ no → streak = 0
-       │
-       └─ yes → streak += 1
-                    │
-           confirmations reached?
-                    │
-                    ▼
-                 capable
+execute
+  ↓
+judge completed turn
+  ↓
+escalate verdict?
+  ├─ no  → reset streak
+  └─ yes → increment streak
+             ↓
+        confirmations reached?
+             ↓
+          escalate
 ```
+
+## Delegent migration
+
+Do not route to Lead merely because a coding task appears difficult.
+
+Use two escalation classes:
+
+### Hard escalation
+
+Immediate, deterministic Lead ownership:
+
+- architecture ambiguity;
+- security decisions;
+- public API semantics;
+- schema semantics;
+- conflicting requirements;
+- irreversible/high-blast-radius decisions.
+
+This is already represented in the current Worker contract.
+
+### Trajectory escalation
+
+For ordinary execution failure, allow Worker recovery. Escalate only when failure is repeated/corroborated or the Worker explicitly reports inability to proceed.
+
+Candidate signals:
+
+```text
+same error repeats
+multiple failed fix/test cycles
+long nonproductive loop
+contradictory conclusions
+repeated low-confidence handoffs
+context degradation / repeated compaction
+```
+
+Do not copy Switchyard's exact threshold values; Delegent has a different routing objective.
 
 ---
 
-# 10. Migration 7 — Require Multiple Escalation Confirmations
+# 11. Migration 7 — Multiple Confirmations Before Soft Escalation
 
-Switchyard default：
+## Switchyard pattern
 
-```text
-confirmations = 2
-```
+The escalation judge config supports a `confirmations` count so one weak signal need not immediately move the session to the capable tier.
 
-不是 worker 一出錯就升級。
-
-Source：
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/escalation.rs
 
-EscalationJudgeConfig
+Key type:
+- EscalationJudgeConfig
 ```
 
-Default：
+At the reviewed snapshot, defaults include a confirmation count and bounded recent transcript window.
 
-```text
-confirmations: 2
-recent_turn_window: 28
-window_message_chars: 500
-```
+## Delegent migration
 
----
-
-## Migration
-
-我們採用同樣 concept：
+Borrow the structure, not the constants:
 
 ```text
 single recoverable failure
-→ Nemotron自己處理
+→ Worker attempts recovery
 
-repeated / corroborated failure
+repeated/corroborated failure
 → Lead escalation
 ```
 
-第一版可以定義：
-
-```text
-EscalationScore
-```
-
-觸發來源：
-
-```text
-+1 repeated same failure
-+1 failed fix/test cycle
-+1 contradictory understanding
-+1 architecture uncertainty
-+2 explicit decision boundary
-+2 security/API/schema ambiguity
-```
-
-其中：
-
-```text
-architecture/security/API/schema
-```
-
-仍然是 hard escalation，不需要等 streak。
+Hard Lead boundaries remain immediate and bypass the soft confirmation mechanism.
 
 ---
 
-# 11. Migration 8 — Condense Trajectory Before Escalation
+# 12. Migration 8 — Condense Trajectory Before Escalation
 
-Switchyard 沒有把整份 conversation 丟給 escalation judge。
+## Switchyard pattern
 
-它會保留：
+The escalation judge does not consume an unlimited raw transcript. It preserves anchors and a recent window, truncating less valuable history.
 
-```text
-system/developer anchor
-first user task
-recent trajectory
-```
-
-而且：
-
-* system anchor 有 cap
-* first user task 有較高 cap
-* recent messages individually truncate
-* 整份 judge input 有 total cap
-* 越舊的 activity 越先移除
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/escalation.rs
+
+Key elements:
+- SYSTEM_CHARS
+- FIRST_USER_CHARS
+- MAX_REQUEST_CHARS
+- truncate_middle()
+- summarize_for_judge()
 ```
 
-Key components：
+## Delegent migration
 
-```text
-SYSTEM_CHARS
-FIRST_USER_CHARS
-MAX_REQUEST_CHARS
+The Context Firewall applies most strongly when a Worker is stuck.
 
-truncate_middle()
-summarize_for_judge()
-```
+Do not send a 100K-token debugging trajectory back to Codex.
 
----
-
-## Migration
-
-Worker escalation 不應該把：
-
-```text
-100K debugging transcript
-```
-
-送回 Lead。
-
-應壓縮成：
+Escalation should be compressed to something like:
 
 ```text
 DECISION_NEEDED
-
 Goal:
-...
-
 What I tried:
-1. ...
-2. ...
-
 Observed:
-...
-
 Current blocker:
-...
-
 Relevant evidence:
-- file:line
-- test
-- error
-
 Options:
-A
-B
-
-Worker recommendation:
-...
-
+Recommendation:
 Confidence:
-...
 ```
 
-這是我們 Context Firewall 的核心之一。
+The current `worker-contract.md` already has the core `DECISION_NEEDED` structure. Future trajectory escalation should extend it without exposing raw Worker history.
 
 ---
 
-# 12. Migration 9 — Deterministic Worker-Health Signals
+# 13. Migration 9 — Deterministic Worker-Health Signals
 
-Switchyard 不全部依賴 LLM judge。
+## Switchyard pattern
 
-它先從 tools deterministic 地抽 signal。
+Switchyard extracts deterministic signals from normalized tool calls/results before relying on an LLM classifier.
 
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/tool_signals.rs
+
+Key symbols:
+- ToolSignals
+- ToolSignalProcessor
+- classify_tool_call(...)
 ```
 
-它辨識：
+Signals include concepts such as:
 
-```text
-error severity
-read count
-write count
-edit count
-planning count
-tests passed
-recent activity
-turn depth
-context compaction
-```
+- error severity;
+- read/write/edit activity;
+- planning activity;
+- recent activity windows;
+- tests passing;
+- turn depth;
+- context compaction.
 
-也直接支援 Codex tool names，例如：
+The extractor also recognizes coding-agent-specific tool names, including Codex-style tool names.
 
-```text
-apply_patch
-update_plan
-exec_command
-```
+## Delegent migration
 
----
-
-## Migration
-
-我們不需要完整複製 scorer。
-
-但 Worker runtime 未來至少應記：
+Future Worker-health telemetry should collect at least:
 
 ```text
 reads
@@ -791,712 +596,450 @@ test runs
 test failures
 same-error repetition
 turn count
-context usage
-compaction count
+context/compaction events
 ```
 
-用途不是：
-
-> 「exploration → Sol」
-
-而是：
-
-> **判斷 Nemotron worker 是否 healthy。**
-
----
-
-# 13. IMPORTANT DIVERGENCE — Do Not Copy Their Stage Policy
-
-Switchyard stage scoring是：
-
-```text
-severity ↑
-spinning ↑
-exploring ↑
-        ↓
-capable tier
-
-production intensity ↑
-        ↓
-efficient tier
-```
-
-Source：
-
-```text
-crates/libsy/src/algorithms/util/stage.rs
-
-CodingAgentDimensions
-dimensions_from_signal()
-score_signal()
-pick_tier()
-```
-
-這不符合我們的主要 optimization objective。
-
-我們是：
-
-```text
-large-context exploration
-→ Nemotron
-
-high-impact judgment
-→ Sol
-```
-
-因此：
-
-```text
-exploring == Lead
-```
-
-**不可直接 migration。**
-
----
-
-## What we borrow instead
-
-只拿：
-
-```text
-observable signals
-        ↓
-deterministic rules
-        ↓
-confidence / ambiguity
-        ↓
-fallback to higher-level judgment
-```
-
-不拿它的：
-
-```text
-signal → strong/weak model
-```
-
-mapping。
+The purpose is **not** to copy Switchyard's capable/efficient mapping. The purpose is to determine whether a delegated Worker is healthy, progressing, or should escalate/rotate.
 
 ---
 
 # 14. Migration 10 — Hard Rules Before Soft Classification
 
-Switchyard `pick_tier()` 有很好的 priority structure：
+## Switchyard pattern
 
-```text
-1. hard escalation
-2. hard de-escalation
-3. signal scorer
-4. classifier / fallback
-```
+The stage router uses an ordered decision cascade: hard overrides, hard settled-state behavior, signal scoring, then fallback/classifier behavior.
 
-這比全部交給 LLM 自由判斷穩定。
-
----
-
-## Migration
-
-我們也採：
-
-```text
-1. HARD LEAD OWNERSHIP
-
-security
-public API
-schema semantics
-irreversible architecture
-user intent
-
-        ↓ otherwise
-
-2. HARD WORKER CASES
-
-large exploration
-large logs
-mechanical implementation
-
-        ↓ otherwise
-
-3. CONTEXT-VALUE HEURISTIC
-
-Does Lead need intermediate context?
-
-        ↓ ambiguous
-
-4. Lead decides
-```
-
-因此 LLM-based fuzzy routing永遠不是第一層。
-
----
-
-# 15. Migration 11 — Explicit Decision Source
-
-Switchyard會記錄：
-
-```text
-override
-tests_passed
-dimensions
-ambiguous
-llm-classifier
-fall_open
-```
-
-### Source
+### Source code
 
 ```text
 crates/libsy/src/algorithms/util/stage.rs
 
-enum DecisionSource
+Key functions/types:
+- pick_tier(...)
+- should_escalate(...)
+- should_deescalate(...)
+- PickOutcome
 ```
 
-這對 tuning 非常重要。
+## Delegent migration
+
+Adopt the cascade structure but use our own semantics:
+
+```text
+1. hard Lead boundary
+2. hard obvious Worker case
+3. context-value heuristic
+4. dispatch-overhead heuristic
+5. Lead resolves ambiguity
+```
+
+Examples of hard Lead boundaries:
+
+```text
+security
+public API behavior
+schema semantics
+architecture with high blast radius
+user intent / conflicting requirements
+```
+
+Examples of strong Worker candidates:
+
+```text
+broad repository exploration
+large logs
+approved multi-file implementation
+mechanical refactor
+test/debug execution loops
+```
 
 ---
 
-## Migration
+# 15. Important Divergence — Do Not Copy Switchyard Stage Semantics
 
-每次 delegation 記：
+## Switchyard behavior
+
+Switchyard's stage model treats exploration/spinning/error recovery as evidence for the capable tier and production intensity as evidence for the efficient tier.
+
+### Source code
+
+```text
+crates/libsy/src/algorithms/util/stage.rs
+
+Key symbols:
+- CodingAgentDimensions
+- dimensions_from_signal(...)
+- score_signal(...)
+- pick_tier(...)
+```
+
+## Why Delegent differs
+
+Our resource asymmetry is different:
+
+```text
+large-context repository exploration
+→ Worker / Nemotron
+
+high-impact architecture or semantics
+→ Lead / Sol
+```
+
+Therefore this mapping is explicitly rejected:
+
+```text
+exploring == Lead
+```
+
+We borrow the **observable-signal → deterministic-rule → ambiguity fallback** architecture, not the strong/weak tier mapping.
+
+---
+
+# 16. Migration 11 — Record Decision Source
+
+## Switchyard pattern
+
+Switchyard records which routing component produced a decision so behavior can be explained and calibrated.
+
+### Source code
+
+```text
+crates/libsy/src/algorithms/util/stage.rs
+
+Key type:
+- DecisionSource
+```
+
+Sources include concepts such as override, settled tests, dimensions, ambiguity, LLM classifier, and fallback.
+
+## Delegent migration
+
+Future routing events should record a stable source vocabulary, for example:
+
+```text
+hard_lead_boundary
+context_heavy
+dispatch_overhead
+worker_affinity
+fresh_independence
+parallel_independence
+worker_escalation
+fallback
+```
+
+Example event:
 
 ```text
 owner: worker
-
-decision_source:
-context_heavy
-
-reason:
-broad repository exploration
-
-worker:
-scheduler-primary
-
-memory_action:
-reuse
-
-confidence:
-high
+decision_source: context_heavy
+reason: broad repository exploration
+worker_id: scheduler-primary
+memory_action: reuse
 ```
 
-或者：
-
-```text
-owner: lead
-
-decision_source:
-hard_lead_boundary
-
-reason:
-database schema semantics
-```
-
-未來才有辦法分析：
-
-> routing policy 到底準不準？
+This is required for meaningful evaluation rather than anecdotal tuning.
 
 ---
 
-# 16. Migration 12 — Session State Must Be Bounded
+# 17. Migration 12 — Persistent State Needs a Lifecycle
 
-Switchyard對 session state 不讓它永遠長。
+## Switchyard pattern
 
-`FallThrough`：
+Stateful `FallThrough` compositions retain private state per session and clean up inactive session state.
 
-```text
-session_id
-→ private State
-```
-
-並有：
-
-```text
-SESSION_STATE_TTL = 1 hour
-```
-
-以及 cleanup。
-
-### Source Code
+### Source code
 
 ```text
 crates/libsy/src/algorithms/fall_through.rs
 
-SessionState
-SessionStates
-SESSION_STATE_TTL
-session_state()
-remove_session()
+Key elements:
+- SessionState<S>
+- SessionStates<S>
+- SESSION_STATE_TTL
+- session_state(...)
+- remove_session(...)
+- cleanup_inactive_sessions(...)
 ```
 
----
+## Delegent migration
 
-## Migration
+Do not copy Switchyard's exact TTL. Persistent Worker sessions intentionally have longer semantic value than per-route state.
 
-我們不照抄一小時 TTL。
-
-因為 Nemotron worker 的價值就是跨工作 reuse。
-
-但要借它的：
-
-> **Memory must have lifecycle.**
-
-Worker registry需要：
+Borrow the lifecycle principle:
 
 ```text
-created_at
-last_used_at
-last_sync_commit
-scope
-context_health
-status
-```
-
-例如：
-
-```text
+created
 active
 stale
 retired
 invalid
 ```
 
-而不是 session 永遠存在。
+Track at least:
+
+```text
+created_at
+last_used_at
+last_sync_commit
+scope
+status
+context_health
+```
+
+A Worker should never be "persistent forever" merely because its session still exists.
 
 ---
 
-# 17. Proposed Target Architecture
+# 18. Migration 13 — Subagent Router as a Future Runtime Reference
 
-Migration 完成後：
+Switchyard now contains a dedicated subagent routing wrapper that routes delegated child work independently while preserving the parent algorithm for ordinary traffic.
+
+### Source code
 
 ```text
-                       Codex Lead
-                           │
-                           ▼
-                    delegating-work
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-        hard Lead boundary       delegatable work
-              │                         │
-              ▼                         ▼
-             Sol                Worker Registry
-                                        │
-                             ┌──────────┴──────────┐
-                             │                     │
-                       affinity hit          no affinity
-                             │                     │
-                             ▼                     ▼
-                    existing worker          fresh worker
-                             │                     │
-                             └──────────┬──────────┘
-                                        ▼
-                                    OpenCode
-                                        │
-                                    Nemotron
-                                        │
-                                execution trajectory
-                                        │
-                               ┌────────┴─────────┐
-                               │                  │
-                           healthy             stuck
-                               │                  │
-                            continue      escalation policy
-                                                  │
-                                         confirmed problem?
-                                             │        │
-                                            NO       YES
-                                             │        │
-                                          worker    Codex
+crates/libsy/src/algorithms/subagent.rs
+
+Key symbols:
+- SubagentRouter
+- SubagentRouterConfig
 ```
+
+Notable behavior:
+
+- delegated work is routed independently from parent/root traffic;
+- child routing can use `ClassifyTrigger::NewSession` affinity;
+- different child identities can retain separate target assignments;
+- the classifier can receive only the delegated prompt;
+- a default child target closes the cascade.
+
+## Delegent migration
+
+We should not directly embed this router in V0.1, but it is a strong runtime precedent for the future Worker registry/adapter boundary:
+
+```text
+root / Lead workflow
+≠
+delegated Worker execution
+```
+
+This supports the architectural decision that Worker session state should be managed independently rather than inferred from the Lead conversation.
 
 ---
 
-# 18. Target Files
+# 19. Explicit Non-Migrations
 
-## V0.1 — Skill Layer
+## 19.1 Do not migrate the proxy layer
 
-```text
-delegating-work/
-├── SKILL.md
-└── references/
-    ├── routing-policy.md
-    ├── worker-memory.md
-    ├── worker-contract.md
-    └── escalation-policy.md
-```
-
-### `routing-policy.md`
-
-Inspired by:
-
-```text
-Switchyard:
-util/subagent.rs
-util/stage.rs
-```
-
-Contains:
-
-```text
-Lead ownership
-Context-value routing
-Hard rules
-Delegation overhead
-Decision source
-```
-
----
-
-### `worker-memory.md`
-
-Inspired mainly by:
-
-```text
-util/affinity.rs
-subagent_affinity_tests.rs
-fall_through.rs
-```
-
-Contains:
-
-```text
-worker identity
-affinity
-reuse
-fresh worker
-staleness
-lifecycle
-```
-
----
-
-### `worker-contract.md`
-
-Inspired by:
-
-```text
-util/subagent.rs
-```
-
-Contains:
-
-```text
-minimal delegated prompt
-task scope
-forbidden decisions
-return schema
-```
-
----
-
-### `escalation-policy.md`
-
-Inspired by:
-
-```text
-algorithms/escalation.rs
-util/escalation.rs
-util/tool_signals.rs
-```
-
-Contains:
-
-```text
-hard escalation
-failure streak
-trajectory compression
-worker-health signals
-```
-
----
-
-# 19. V0.2 — Runtime State
-
-Later add:
-
-```text
-worker-registry.json
-```
-
-Conceptually:
-
-```json
-{
-  "workers": {
-    "scheduler-primary": {
-      "scope": "scheduler",
-      "session_id": "...",
-      "last_sync_commit": "...",
-      "status": "active"
-    }
-  }
-}
-```
-
-Do not implement this inside `SKILL.md`.
-
-The skill expresses policy.
-
-Runtime/wrapper manages state.
-
----
-
-# 20. V0.3 — Observability
-
-Record for every significant work unit:
-
-```text
-task_id
-task_type
-
-owner:
-lead | worker
-
-decision_source
-
-worker_id
-worker_reused
-
-context_estimate
-
-result:
-success | fail | escalated
-
-escalation_reason
-
-turns
-tests
-failures
-```
-
-Then build our own equivalent of Switchyard calibration.
-
----
-
-# 21. Benchmark Design Borrowed From Switchyard
-
-Switchyard's Stage Router documentation suggests comparing strong/efficient outcomes through categories such as:
-
-```text
-SAFE
-LOSS
-RESCUE
-HARD
-```
-
-We adapt them to delegation:
-
-```text
-DELEGATE_SAFE
-Worker succeeds; Lead not needed.
-
-DELEGATE_LOSS
-Worker fails where Lead would succeed.
-
-CONTEXT_RESCUE
-Worker succeeds and avoids major Lead context consumption.
-
-HARD
-Neither workflow succeeds cleanly.
-```
-
-Primary metrics:
-
-```text
-task success
-Lead context consumed
-Worker context consumed
-Lead interventions
-worker reuse rate
-escalation rate
-false escalation rate
-decision quality
-wall-clock time
-```
-
----
-
-# 22. Explicit Non-Migrations
-
-Do NOT copy into V0.1:
-
-### Switchyard proxy
+Out of scope for V0.1:
 
 ```text
 OpenAI Responses
+↔ OpenAI Chat
 ↔ Anthropic Messages
-↔ Chat Completions
 ```
 
-Not our current problem.
+Switchyard may later be evaluated below the Worker layer when multiple Worker-side model providers exist.
 
----
+## 19.2 Do not replace separate contexts with per-turn backend switching
 
-### Per-turn model switching
-
-Do not replace:
+Reject:
 
 ```text
-separate Sol context
-+
-separate Nemotron context
+one shared coding-agent trajectory
+→ switch Sol/Nemotron backend per turn
 ```
 
-with:
+Core requirement:
 
 ```text
-one shared conversation
-switch backend models
+Lead context
+        │
+        │ compact task / compact result
+        ▼
+separate Worker context
 ```
 
-That would destroy the Context Firewall.
+The Context Firewall is a first-class product requirement.
 
----
+## 19.3 Do not copy exact thresholds
 
-### Their strong/weak stage mapping
-
-Especially do not copy:
+Do not blindly copy values such as:
 
 ```text
-exploration → capable
+confidence threshold
+confirmation count
+recent-window length
+session TTL
 ```
 
-Our environment has a long-context worker specifically intended for exploration.
+They were calibrated for Switchyard's model-routing problem, not Delegent's context-placement problem.
 
 ---
 
-### Their exact numeric thresholds
+# 20. Mapping Into the Current Repository
 
-Do not blindly copy:
+Current files:
 
 ```text
-confidence_threshold = 0.5
-confirmations = 2
-recent_window = 3
-TTL = 1 hour
+skills/delegating-work/SKILL.md
+skills/delegating-work/references/routing-policy.md
+skills/delegating-work/references/worker-memory.md
+skills/delegating-work/references/worker-contract.md
+skills/delegating-work/references/worker-agent.md
+skills/delegating-work/opencode.json
+skills/delegating-work/scripts/nemotron-worker.ps1
 ```
 
-The **structure** is useful.
+Migration mapping:
 
-The numbers were calibrated for Switchyard's routing objective, not ours.
-
----
-
-# 23. Migration Priority
-
-## P0 — Implement now
-
-1. **Assignment / affinity separation**
-2. **Lead vs delegated-work distinction**
-3. **Existing vs fresh worker decision**
-4. **Worker identity**
-5. **Minimal delegated prompt**
-6. **Compressed handoff**
-7. **Hard Lead boundaries**
+| Borrowed pattern | Current/future home |
+| --- | --- |
+| Lead vs Worker placement | `routing-policy.md` |
+| separate affinity policy | `worker-memory.md` + future registry |
+| compact delegated task | `worker-contract.md` + future dispatch structure |
+| hard escalation | `worker-contract.md` |
+| trajectory escalation | future `escalation-policy.md` / runtime |
+| Worker identity | future Worker registry |
+| session lifecycle | future Worker registry |
+| decision provenance | future eval/telemetry layer |
+| Worker-health signals | future runtime telemetry |
+| OpenCode/Nemotron execution | `worker-agent.md`, wrapper, `opencode.json` |
+| top-level orchestration | future `skills/delegent/SKILL.md` |
 
 ---
 
-## P1 — After OpenCode/Nemotron connection works
+# 21. Migration Priority
 
-8. Worker trajectory signals
-9. Repeated-failure escalation
-10. Worker staleness detection
-11. Worker registry
-12. Decision-source logging
+## P0 — Required for the Delegent V0.1 loop
+
+1. Add the `Delegent` top-level orchestrator.
+2. Preserve the existing separation between routing and Worker memory.
+3. Keep the compact Worker contract / Context Firewall.
+4. Preserve hard Lead escalation boundaries.
+5. Make existing-vs-fresh Worker choice explicit during orchestration.
+6. Keep final acceptance with Lead.
+
+## P1 — Worker continuity runtime
+
+7. Add stable Worker identity/registry.
+8. Automatic OpenCode session lookup/reuse.
+9. Track `last_sync_commit` and resynchronize stale Workers.
+10. Distinguish delegated work from Worker maintenance operations.
+11. Add Worker lifecycle states.
+
+## P2 — Observed-trajectory quality control
+
+12. Worker-health signals.
+13. Repeated-failure escalation.
+14. Decision-source logging.
+15. Context-health / Worker rotation policy.
+
+## P3 — Optional model-routing layer
+
+16. Evaluate Switchyard below OpenCode when there are multiple Worker-side models/providers and model-level routing creates real value.
 
 ---
 
-## P2 — After real-world usage data
+# 22. Evaluation Borrowed From Switchyard
 
-13. Threshold calibration
-14. Adaptive escalation
-15. Worker-health scoring
-16. context-limit rotation
-17. multi-worker routing
+Switchyard's calibration work reinforces an important principle: routing should be measured with counterfactual outcome categories rather than judged only by intuition.
 
----
-
-## P3 — Optional
-
-Evaluate Switchyard itself as:
+Adapted Delegent categories:
 
 ```text
-OpenCode worker
-      ↓
-Switchyard
-      ↓
-multiple API models
+DELEGATE_SAFE
+Worker succeeds; Lead intervention was unnecessary.
+
+DELEGATE_LOSS
+Delegation fails where Lead ownership would likely succeed.
+
+CONTEXT_RESCUE
+Worker succeeds while avoiding substantial disposable Lead context.
+
+HARD
+Neither ownership strategy succeeds cleanly.
 ```
 
-only when multiple Worker models actually exist.
-
----
-
-# 24. Source Code Map
-
-| Concept                           | Switchyard Source                                              |
-| --------------------------------- | -------------------------------------------------------------- |
-| Parent vs delegated child routing | `crates/libsy/src/algorithms/subagent.rs`                      |
-| Delegated-work detection          | `crates/libsy/src/algorithms/util/subagent.rs`                 |
-| Prompt-only child classification  | `util/subagent.rs::delegated_prompt_request()`                 |
-| Worker affinity                   | `crates/libsy/src/algorithms/util/affinity.rs::AffinityRouter` |
-| Child identity + retention        | `util/affinity.rs::affinity_key()` / `retention_key()`         |
-| Affinity behavior tests           | `crates/libsy/src/algorithms/subagent_affinity_tests.rs`       |
-| Escalation streak                 | `crates/libsy/src/algorithms/escalation.rs`                    |
-| Trajectory judge                  | `crates/libsy/src/algorithms/util/escalation.rs`               |
-| Trajectory compression            | `util/escalation.rs::summarize_for_judge()`                    |
-| Tool activity signals             | `crates/libsy/src/algorithms/util/tool_signals.rs`             |
-| Stage dimensions                  | `util/stage.rs::CodingAgentDimensions`                         |
-| Deterministic decision cascade    | `util/stage.rs::pick_tier()`                                   |
-| Decision-source telemetry         | `util/stage.rs::DecisionSource`                                |
-| Stateful classifier composition   | `crates/libsy/src/algorithms/fall_through.rs`                  |
-| Session lifecycle / TTL           | `fall_through.rs::SessionState`                                |
-
----
-
-# 25. Final Design Principle
-
-從 Switchyard 最值得 migration 的不是它的 routing formula，而是三個 architecture patterns：
+Track:
 
 ```text
-1. SEPARATION
+task success
+Lead context burden
+Worker context burden
+Lead interventions
+Worker reuse rate
+fresh-Worker rate
+escalation rate
+false-escalation rate
+handoff quality
+wall-clock time
+```
 
-Which worker?
+The first 10–20 representative tasks should be treated as policy calibration data, not just demos.
+
+---
+
+# 23. Source Code Map
+
+All paths below refer to `NVIDIA-NeMo/Switchyard` at or around the reviewed snapshot `27fc1ce9ff3846760337fe42ab09c28f5b01c807`.
+
+| Concept | Switchyard source |
+| --- | --- |
+| Parent vs delegated child routing | `crates/libsy/src/algorithms/subagent.rs` |
+| Delegated-work detection | `crates/libsy/src/algorithms/util/subagent.rs` |
+| Prompt-only child classification | `crates/libsy/src/algorithms/util/subagent.rs::delegated_prompt_request()` |
+| Worker/model affinity | `crates/libsy/src/algorithms/util/affinity.rs::AffinityRouter` |
+| Child identity and retention | `crates/libsy/src/algorithms/util/affinity.rs::affinity_key()` / `retention_key()` |
+| Affinity integration behavior | `crates/libsy/src/algorithms/subagent_affinity_tests.rs` |
+| Escalation streak | `crates/libsy/src/algorithms/escalation.rs` |
+| Trajectory judge | `crates/libsy/src/algorithms/util/escalation.rs` |
+| Trajectory compression | `crates/libsy/src/algorithms/util/escalation.rs::summarize_for_judge()` |
+| Tool/progress signals | `crates/libsy/src/algorithms/util/tool_signals.rs` |
+| Stage dimensions | `crates/libsy/src/algorithms/util/stage.rs::CodingAgentDimensions` |
+| Deterministic decision cascade | `crates/libsy/src/algorithms/util/stage.rs::pick_tier()` |
+| Decision-source telemetry | `crates/libsy/src/algorithms/util/stage.rs::DecisionSource` |
+| Stateful classifier composition | `crates/libsy/src/algorithms/fall_through.rs` |
+| Session lifecycle / cleanup | `crates/libsy/src/algorithms/fall_through.rs` |
+
+---
+
+# 24. Final Migration Principle
+
+The most valuable Switchyard lessons for Delegent are architectural, not numerical:
+
+```text
+1. SEPARATE OWNERSHIP FROM AFFINITY
+Where should work go?
 ≠
 How long should that assignment live?
 
-
-2. OBSERVE BEFORE ESCALATING
-
-Task looks difficult
+2. OBSERVE BEFORE SOFT ESCALATION
+Task looks hard
 ≠
-Worker is actually failing.
+Worker is actually failing
 
+3. HARD RULES BEFORE FUZZY JUDGMENT
+Lead boundary
+→ observable signals
+→ higher-level judgment only when ambiguous
 
-3. HARD RULES → SIGNALS → JUDGMENT
+4. KEEP IDENTITY AND STATE EXPLICIT
+Persistent context needs identity, lifecycle, resync, and retirement
 
-deterministic boundary
-        ↓
-observable trajectory
-        ↓
-LLM judgment only when ambiguous
+5. RECORD WHY ROUTING HAPPENED
+A routing system cannot be calibrated if it records only the final owner
 ```
 
-套到我們系統後：
+Applied to Delegent:
 
 ```text
-Lead
-= strategic judgment + durable intent
-
-Worker
-= repository context + execution
-
-Affinity
-= reuse expensive worker understanding
-
-Escalation
-= protect quality when worker exceeds its capability
-
-Handoff
-= prevent worker context from leaking back into Lead
+Delegent = workflow orchestration
+Lead = strategic judgment + durable intent
+Worker = repository context + execution memory
+Affinity = reuse expensive Worker understanding
+Escalation = protect quality when Worker reaches its boundary
+Handoff = protect the Context Firewall
+Repo = durable project knowledge
 ```
 
-這些是 Switchyard 最值得我們保留的部分。
+Switchyard informs these internal mechanisms, but Delegent remains distinct because its primary routing unit is a **work unit / agent context**, not an individual LLM request.
