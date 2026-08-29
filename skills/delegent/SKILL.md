@@ -18,6 +18,8 @@ $delegent $implement
 
 V0.1 expects exactly one companion workflow skill. The workflow owns **what must happen**; Delegent owns **where each significant work unit lives** and how work crosses the Lead/Worker boundary.
 
+Delegent is workflow-agnostic. It does not depend on Matt Pocock's `implement` skill or any other particular external workflow. Matt's `implement` is a primary real-world integration target because it matches common ticket/spec-driven development usage, but it is not a Delegent runtime dependency. Controlled evaluation may instead use the repository-local `delegent-eval-workflow` to isolate Delegent orchestration from external workflow behavior.
+
 ## Preserve the selected workflow
 
 Follow the companion workflow's instructions and completion gates in full. Do not weaken, skip, replace, or reconstruct its required testing, review, or completion steps merely because work is delegated.
