@@ -61,7 +61,7 @@ Validated in direct Worker smoke tests:
 - read-only Git resynchronization (`status`, `log`, `diff`) works without broad repository rereading
 - exact staleness detection remains partial because V0.1 does not yet persist `last_sync_commit`
 
-Known smoke-test findings:
+Known smoke-test findings and fixes:
 
 - one follow-up handoff omitted `CHANGES`, `TESTS`, and `RISKS`; Worker prompts now explicitly require every handoff field exactly once
 - the `plan` Worker initially attempted `ls -la`; its prompt now explicitly prefers native read/search tools and forbids general shell listing attempts
