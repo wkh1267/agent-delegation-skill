@@ -57,23 +57,32 @@ try {
         }
     }
 
+    # Match credential-shaped values, not documentation that merely mentions
+    # the public NVIDIA key prefix. Never print the matched secret text.
+    $credentialPattern = 'nvapi-[A-Za-z0-9_-]{20,}'
     $secretMatches = @(
         Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Force |
             Where-Object {
                 $_.FullName -notmatch '\\.git\\' -and
                 $_.FullName -ne $envFile
             } |
-            Select-String -Pattern 'nvapi-' -List -ErrorAction SilentlyContinue
+            Select-String -Pattern $credentialPattern -List -ErrorAction SilentlyContinue
     )
 
     if ($secretMatches.Count -gt 0) {
-        $failures += 'Credential-shaped nvapi- content exists outside the ignored delegating-work/.env file.'
+        $failures += 'Credential-shaped NVIDIA API key content exists outside the ignored delegating-work/.env file.'
     }
 
     if ($failures.Count -gt 0) {
         Write-Output 'PREFLIGHT: FAIL'
         foreach ($failure in $failures) {
             Write-Output "- $failure"
+        }
+        if ($status.Count -gt 0) {
+            Write-Output 'working_tree_changes:'
+            foreach ($line in $status) {
+                Write-Output "  $line"
+            }
         }
         exit 1
     }
