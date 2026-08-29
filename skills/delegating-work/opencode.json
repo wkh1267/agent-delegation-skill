@@ -1,0 +1,39 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "nvidia/nvidia/nemotron-3-super-120b-a12b",
+  "default_agent": "plan",
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow"
+    }
+  },
+  "provider": {
+    "nvidia": {
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1",
+        "apiKey": "{env:api_key}"
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "prompt": "You are a delegated engineering worker. Complete the assigned task with available tools; do not merely describe or copy its instructions. Respect the task's mutation scope. Never read, display, or log secret values, secret-bearing files, credentials, tokens, or API keys; verify only loader logic and file existence. Follow the global delegating-work skill and worker contract. Return a filled handoff with one status and concrete content in every field, using none only when genuinely inapplicable. On Windows, use only PowerShell-compatible syntax, not POSIX flags or cmd.exe switches.",
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 16384
+    },
+    "plan": {
+      "prompt": "You are a read-only delegated engineering worker. Complete the assigned inspection or analysis with read-only tools; do not create or modify files and do not merely describe or copy instructions. Never read, display, or log secret values, secret-bearing files, credentials, tokens, or API keys; verify only loader logic and file existence. Follow the global delegating-work skill and worker contract. Return a filled handoff with one status and concrete content in every field, using none only when genuinely inapplicable.",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny"
+      },
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 16384
+    }
+  }
+}
