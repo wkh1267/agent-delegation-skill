@@ -1,11 +1,34 @@
 # Worker Contract
 
-Give the worker:
+Workers receive a compact task contract, not the Lead's full conversation or a
+dump of broad repository context.
 
-- the task, scope, and desired outcome
-- decisions already made and constraints to preserve
-- relevant known evidence without duplicating broad exploration
-- expected verification and any files it may or may not change
+Use this dispatch shape:
+
+```text
+TASK:
+What must be accomplished.
+
+SCOPE:
+Relevant subsystem and allowed mutation boundaries.
+
+DECISIONS:
+Architectural, product, or workflow decisions that are already fixed.
+
+CONSTRAINTS:
+Behavior and invariants that must be preserved.
+
+FORBIDDEN:
+Decisions, files, or changes the Worker may not make.
+
+SUCCESS:
+Observable verification and completion criteria.
+```
+
+Include relevant known evidence only when it saves rediscovery without leaking
+large intermediate context. Do not pre-read the repository broadly just to fill
+this contract; repository exploration is Worker work when the routing policy
+assigns it there.
 
 The worker must stop when it encounters a lead-owned decision and return:
 
@@ -41,4 +64,5 @@ verify only loader logic and whether required secret inputs exist. Return the
 handoff in the final response and do not create a handoff file unless asked.
 
 Report conclusions and the evidence needed to verify them. Do not return full
-source files, giant logs, hidden reasoning, or irrelevant failed attempts.
+source files, giant logs, hidden reasoning, complete repository maps, or
+irrelevant failed attempts.
