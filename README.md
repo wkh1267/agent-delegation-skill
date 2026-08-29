@@ -52,6 +52,24 @@ Implemented:
 - stable title convention for manual/deterministic Worker affinity
 - limited read-only Git commands for Worker resynchronization
 
+Validated in direct Worker smoke tests:
+
+- Nemotron `plan` Worker execution succeeds through the configured OpenCode/NIM path
+- denied general-shell operations are enforced and the Worker can recover with allowed read tools
+- compact Worker handoff behavior works and avoids source/log dumps
+- same-session follow-up preserves useful continuity and can deliberately reuse prior Worker context
+- read-only Git resynchronization (`status`, `log`, `diff`) works without broad repository rereading
+- exact staleness detection remains partial because V0.1 does not yet persist `last_sync_commit`
+
+Known smoke-test findings:
+
+- one follow-up handoff omitted `CHANGES`, `TESTS`, and `RISKS`; Worker prompts now explicitly require every handoff field exactly once
+- the `plan` Worker initially attempted `ls -la`; its prompt now explicitly prefers native read/search tools and forbids general shell listing attempts
+- a reused Worker approximated its sync baseline with `HEAD~N`; this is insufficient for exact staleness detection and confirms `last_sync_commit` as a functional V0.2 requirement
+- evidence scope must match conclusion scope: inspecting only one file is not enough to claim the whole repository is unchanged
+
+Detailed observations are recorded in [`evals/v0.1-smoke.md`](evals/v0.1-smoke.md).
+
 Not yet implemented:
 
 - automatic Worker registry and `last_sync_commit` tracking
