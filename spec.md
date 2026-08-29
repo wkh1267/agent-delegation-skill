@@ -2,9 +2,9 @@
 
 ## 1. Overview
 
-Delegent is a user-invoked orchestration skill that composes an existing engineering workflow with context-aware delegation.
+Delegent is a user-invoked orchestration skill that composes one explicitly selected engineering workflow with context-aware delegation.
 
-The intended user experience is:
+Target UX:
 
 ```text
 $delegent $implement
@@ -19,18 +19,17 @@ The user chooses **what workflow to run** and **what outcome is needed**. Delege
 
 - which significant work units stay with the Lead;
 - which work units move to a Worker;
-- whether to reuse an existing Worker or start a fresh one;
-- when a Worker must escalate to the Lead;
-- what information is allowed to cross the context boundary;
-- when the workflow is ready for final Lead acceptance.
+- whether to reuse an existing Worker or start fresh;
+- when a Worker must escalate;
+- what information may cross the context boundary;
+- when the selected workflow is ready for Lead acceptance.
 
-Initial target environment:
+Initial environment:
 
 - **Lead:** Codex / GPT-5.6 Sol high or xhigh
 - **Workflow skills:** Matt Pocock skills such as `implement`, `code-review`, `diagnosing-bugs`, and `research`
 - **Worker harness:** OpenCode
 - **Worker model:** NVIDIA Nemotron 3 Super 120B
-- **Worker context:** large-context execution workspace
 - **Delegation inspiration:** Spellbook `dispatching-parallel-agents`
 - **Runtime design inspiration:** NVIDIA NeMo Switchyard affinity, subagent routing, escalation, and observability patterns
 
@@ -47,18 +46,9 @@ The central question is:
 
 > **Where should this work live?**
 
-Possible answers are:
-
-1. Lead context
-2. Existing persistent Worker context
-3. Fresh Worker context
-4. Persistent project memory
-
 ---
 
 ## 2. Product Model
-
-Delegent is the top-level orchestrator. `delegating-work` is an internal reusable placement policy. OpenCode/Nemotron is the current Worker runtime.
 
 ```text
 User
@@ -66,7 +56,7 @@ User
   │ $delegent $implement
   ▼
 Delegent
-  │  owns orchestration and workflow completion
+  │  orchestration + workflow completion
   ├──────────────────────────────┐
   │                              │
   ▼                              ▼
@@ -97,7 +87,7 @@ workflow skill              delegating-work
 
 ### 2.1 Delegent
 
-Delegent is a **user-invoked orchestration skill**. When invoked alongside one workflow skill, it preserves that workflow's semantics while controlling ownership, Worker continuity, escalation, handoff, and final acceptance.
+`skills/delegent/SKILL.md` is the top-level, user-invoked orchestration entry point.
 
 V0.1 supports:
 
@@ -114,27 +104,23 @@ $delegent $diagnosing-bugs
 $delegent $research
 ```
 
+The selected workflow owns **what must happen**. Delegent owns **where each significant unit lives**, Worker continuity, escalation, Context Firewall enforcement, and final workflow completion.
+
 Multi-workflow composition is a future feature.
 
 ### 2.2 `delegating-work`
 
-`delegating-work` is not the product entry point. It is the policy layer used by Delegent to decide where each significant work unit belongs.
+`skills/delegating-work/SKILL.md` is an internal reusable placement policy, not the product entry point.
 
 It owns:
 
-- Lead ownership gates
-- context-value routing
-- dispatch-overhead routing
-- safe parallelism rules
-- Worker-selection policy hooks
+- Lead ownership gates;
+- context-value routing;
+- dispatch-overhead routing;
+- safe-parallelism rules;
+- Worker-selection hooks.
 
-It does **not** own:
-
-- the selected engineering workflow;
-- OpenCode-specific invocation details;
-- NVIDIA/Nemotron-specific configuration;
-- session persistence implementation;
-- model-level routing.
+It does not own the selected workflow, OpenCode invocation, provider configuration, or model-level routing.
 
 ### 2.3 Worker runtime
 
@@ -143,7 +129,7 @@ The current Worker adapter is:
 ```text
 Delegent / delegating-work
         ↓
-Nemotron worker wrapper
+nemotron-worker.ps1
         ↓
 OpenCode
         ↓
@@ -152,40 +138,23 @@ NVIDIA NIM
 Nemotron 3 Super
 ```
 
-The policy layer should continue to refer to an abstract `Worker`; provider- and harness-specific behavior belongs in the Worker adapter/runtime.
+Provider- and harness-specific behavior stays below the policy layer.
 
 ---
 
-## 3. Problem
+## 3. Problem and Context Firewall
 
-Codex Lead has stronger high-impact reasoning but repository-scale work can fill its context with low-reuse intermediate information:
+Repository-scale engineering produces large amounts of low-reuse intermediate context:
 
-- source files;
+- source-file exploration;
 - repository searches;
 - dependency tracing;
 - test output;
 - logs;
 - debugging attempts;
-- generated files;
 - repetitive implementation details.
 
-Those details are often necessary to execute a task but unnecessary for future Lead decisions.
-
-Without delegation:
-
-```text
-Lead context
-├─ user intent
-├─ architecture
-├─ source-file exploration
-├─ grep/search output
-├─ test output
-├─ debugging attempts
-├─ implementation history
-└─ final review
-```
-
-Desired Lead context:
+The Lead should instead preserve high-value strategic context:
 
 ```text
 Lead context
@@ -198,73 +167,25 @@ Lead context
 └─ final acceptance
 ```
 
-The system therefore creates a **Context Firewall**: Workers may consume large intermediate context, while the Lead receives only high-value results and evidence.
+Workers may consume large intermediate context, but only compact results and evidence should cross back to the Lead. This boundary is the **Context Firewall**.
 
 ---
 
 ## 4. Goals
 
-### G1. Preserve Lead context
-
-Lead context growth should be roughly proportional to important decisions, not total codebase work.
-
-### G2. Preserve workflow semantics
-
-Delegent must not silently replace or weaken the selected workflow skill. If `$implement` requires implementation, testing, review, and completion gates, Delegent must preserve them while deciding who performs each unit.
-
-### G3. Delegate context-heavy work
-
-Prefer Workers for:
-
-- repository exploration;
-- broad or large-file reading;
-- dependency tracing;
-- implementation of approved designs;
-- routine refactoring;
-- test generation and execution;
-- debugging and log analysis;
-- documentation;
-- mechanical migrations;
-- independent verification.
-
-### G4. Keep high-impact decisions with the Lead
-
-Lead owns:
-
-- user intent and ambiguous requirements;
-- high-level planning;
-- architecture;
-- public API semantics;
-- database/schema semantics;
-- security-sensitive decisions;
-- irreversible or high-blast-radius decisions;
-- conflicting requirements;
-- final acceptance.
-
-### G5. Reuse valuable Worker context
-
-A Worker that has already built an expensive mental model of a subsystem should be reused for related follow-up work when that context remains trustworthy.
-
-### G6. Preserve independent judgment
-
-Fresh Workers should be preferred for work where prior assumptions are harmful, including:
-
-- independent code review;
-- security review;
-- spec-compliance review;
-- second opinions;
-- root-cause verification;
-- challenges to an existing architecture.
-
-### G7. Escalate based on boundaries and trajectory
-
-Workers must immediately escalate Lead-owned decisions. Later versions should also escalate when execution trajectory indicates repeated failure, spinning, or loss of progress.
+1. **Preserve Lead context.** Lead context growth should track important decisions, not total repository work.
+2. **Preserve workflow semantics.** Delegation must not weaken the selected workflow's testing, review, or completion requirements.
+3. **Delegate context-heavy execution.** Exploration, approved implementation, routine refactoring, tests, debugging, logs, and verification should usually live with Workers.
+4. **Keep consequential judgment with Lead.** Intent, architecture, public APIs, schema semantics, security, irreversible choices, and final acceptance stay with Lead.
+5. **Reuse expensive Worker understanding.** Same-subsystem follow-up should reuse a trustworthy Worker when continuity is valuable.
+6. **Preserve independent judgment.** Review, security analysis, second opinion, and root-cause verification should prefer fresh context when prior assumptions are harmful.
+7. **Escalate safely.** Hard Lead-owned boundaries escalate immediately; trajectory-based failure escalation is a later runtime feature.
 
 ---
 
 ## 5. Non-Goals for V0.1
 
-V0.1 does not attempt to build:
+V0.1 does not build:
 
 - a generic multi-provider model router;
 - a large Worker pool;
@@ -272,17 +193,17 @@ V0.1 does not attempt to build:
 - automatic worktree/merge orchestration;
 - distributed Workers;
 - autonomous long-running project management;
-- per-turn strong/weak model switching inside one shared conversation.
+- per-turn strong/weak model switching in one shared conversation.
 
-Model-level routing may later be delegated to a system such as Switchyard, but it is separate from Delegent's work-unit routing.
+Switchyard may later be evaluated below the Worker layer for model-level routing, but it does not replace Delegent's work-unit/context routing.
 
 ---
 
 ## 6. Workflow Composition
 
-Delegent composes with an existing workflow rather than replacing it.
+Delegent preserves the companion workflow and assigns ownership inside it.
 
-Example with `implement`:
+Example:
 
 ```text
 $delegent $implement
@@ -290,44 +211,29 @@ $delegent $implement
         ▼
 understand task / fixed decisions
         │
-        ▼
-Delegent identifies work units
-        │
         ├─ architecture ambiguity ─────────→ Lead
-        │
         ├─ repository exploration ────────→ Worker
-        │
         ├─ approved implementation ───────→ same Worker
-        │
         ├─ test/debug loop ───────────────→ same Worker
-        │
         ├─ Lead-owned blocker ────────────→ Lead decision
-        │                                  │
-        │                                  └→ Worker resumes
-        │
+        │                                  └→ same Worker resumes
         ├─ independent review ─────────────→ fresh Worker when useful
-        │
         └─ final acceptance ───────────────→ Lead
 ```
 
-Delegent should not require the user to manually say "send implementation to Nemotron". That is acceptable for smoke testing but is not the target UX.
+The target UX does not require the user to say "send implementation to Nemotron". The user selects the workflow; Delegent performs placement.
 
 ---
 
-## 7. Core Placement Policy
+## 7. Placement Policy
 
-Every significant work unit passes through these gates.
+Every significant work unit follows these gates in order.
 
-### Stage 1 — Lead Ownership Gate
-
-Ask:
-
-> Does the Lead need to own this decision?
+### 7.1 Lead Ownership Gate
 
 Keep with Lead when the work determines:
 
-- user intent;
-- ambiguous requirements;
+- user intent or ambiguous requirements;
 - architecture;
 - public contracts;
 - schema semantics;
@@ -336,87 +242,72 @@ Keep with Lead when the work determines:
 - conflicting requirements;
 - final acceptance.
 
-If yes, stop routing and keep the work with Lead.
-
-### Stage 2 — Context Value Gate
+### 7.2 Context Value Gate
 
 Ask:
 
 > Does the Lead need the intermediate context, or only the verified result?
 
-Delegate when intermediate searches, reading, logs, test output, implementation attempts, or debugging history are disposable to the Lead.
+Delegate when searches, broad reading, logs, test output, implementation attempts, or debugging history are disposable to future Lead decisions.
 
-### Stage 3 — Dispatch Overhead Gate
+### 7.3 Dispatch Overhead Gate
 
-Do not delegate trivial known local work when dispatch cost exceeds execution cost.
+Do not delegate trivial known local work when dispatch overhead exceeds the context savings.
 
-Examples:
+### 7.4 Parallelism Gate
 
-- one targeted small-file lookup;
-- one known symbol inspection;
-- a trivial local edit whose context is already loaded.
-
-### Stage 4 — Parallelism Gate
-
-Delegation does not imply parallelism. Parallelize only when tasks:
-
-- are independently understandable;
-- do not edit the same files;
-- do not share mutable state;
-- do not depend on each other's result.
-
-Unknown-scope exploration begins with one Worker. Fan out only after independent domains are known.
+Delegation does not imply parallelism. Parallelize only independent tasks that do not edit the same files, share mutable state, or depend on each other's findings. Unknown-scope exploration begins with one Worker.
 
 ---
 
 ## 8. Worker Selection and Affinity
 
-Once work is delegated, the next decision is:
+Lead-vs-Worker placement and Worker-memory affinity are separate decisions.
 
-> Which Worker context should own it?
-
-This decision is separate from Lead-vs-Worker placement.
-
-### 8.1 Reuse an existing Worker
-
-Reuse when:
+### Reuse an existing Worker when
 
 - the same subsystem or feature remains in scope;
 - implementation continues into testing/debugging;
 - follow-up work benefits from prior exploration;
 - prior context remains relevant and trustworthy.
 
-### 8.2 Start a fresh Worker
-
-Start fresh when:
+### Start a fresh Worker when
 
 - the subsystem is unrelated;
 - independent judgment is required;
-- the old Worker is confused;
-- its context is too stale to resynchronize cheaply;
-- its context is near a practical quality/size limit;
-- the task scope changed substantially.
+- old context is confused or too stale;
+- the context is near a practical quality/size limit;
+- task scope changed substantially.
 
-### 8.3 Assignment pinning
+### V0.1 deterministic affinity
 
-Once a work thread owns a useful Worker context, reuse that Worker until an invalidation condition fires. Do not re-route every turn merely because the generic policy would choose a different fresh Worker.
-
-This separation follows the Switchyard pattern:
+Automatic registry-driven affinity is not yet implemented. Reusable OpenCode sessions use a stable title:
 
 ```text
-placement policy → which execution context should own work
-memory/affinity policy → how long that assignment should live
+delegent:<project>:<scope>:<role>
 ```
 
-See `migration-spec.md` for source-code provenance.
+Example:
+
+```text
+delegent:personal-assistant-backend:scheduler:build
+```
+
+Session discovery must go through the Worker wrapper so it uses the same OpenCode storage roots:
+
+```powershell
+nemotron-worker.ps1 sessions --format json
+```
+
+A title match is only a candidate. Reuse still requires scope/role fit and a staleness check.
+
+This design follows the Switchyard pattern that assignment policy and affinity lifetime are separate concerns. See `migration-spec.md` for provenance.
 
 ---
 
-## 9. Worker Identity and Registry
+## 9. Worker Identity and Future Registry
 
-Policy is already documented; automatic runtime affinity requires a Worker registry.
-
-Minimum future identity:
+A future automatic Worker registry should track at least:
 
 ```text
 WorkerIdentity {
@@ -432,112 +323,87 @@ WorkerIdentity {
 }
 ```
 
-Example:
-
-```text
-project: personal-assistant-backend
-role: implementation
-scope: scheduler
-worker_id: scheduler-primary
-session_id: <opencode-session>
-last_sync_commit: 92ac371
-status: active
-```
-
-Lifecycle states should include at least:
+Lifecycle states:
 
 ```text
 active | stale | retired | invalid
 ```
 
-V0.1 may use manual session selection; automatic registry-driven affinity is the next runtime milestone.
+V0.1 uses title-based session discovery. V0.2 should replace this with registry-driven lookup and automatic `last_sync_commit` tracking.
 
 ---
 
 ## 10. Memory Model
 
-### 10.1 Lead Memory
+### Lead memory
 
-Lives in Codex context and contains:
+Contains intent, requirements, plans, architectural decisions, compressed Worker results, unresolved decisions, risks, and acceptance state.
 
-- intent;
-- requirements;
-- plans;
-- architectural decisions;
-- compressed Worker results;
-- unresolved decisions;
-- risks;
-- acceptance state.
+### Worker working memory
 
-It should normally not contain broad source dumps, raw logs, complete test output, or Worker debugging history.
+Lives in the OpenCode/Nemotron session and contains detailed repository understanding, file relationships, implementation context, test/debug history, logs, and temporary hypotheses.
 
-### 10.2 Worker Working Memory
+### Persistent project memory
 
-Lives in the OpenCode/Nemotron session and contains:
-
-- detailed repository understanding;
-- file relationships;
-- implementation context;
-- test/debug history;
-- temporary hypotheses.
-
-### 10.3 Persistent Project Memory
-
-Stable, expensive-to-rediscover facts may be persisted in repository artifacts. Persist invariants and durable architecture knowledge, not raw logs or easy-to-recover source summaries.
+Persist only stable, expensive-to-rediscover facts such as invariants and durable architecture decisions. Do not persist raw logs, failed hypotheses, or easy-to-recover source summaries.
 
 ---
 
-## 11. Worker Staleness and Resynchronization
+## 11. Staleness and Resynchronization
 
-Before reusing a persistent Worker:
+Before reusing a Worker:
 
 ```text
-last_sync_commit
-      ↓
+previous repository state
+        ↓
 compare with current HEAD
-      ↓
+        ↓
 inspect relevant changes
-      ↓
+        ↓
 refresh affected mental model
-      ↓
+        ↓
 continue
 ```
 
-Do not reread the whole repository unless changed code invalidates prior understanding.
+The `plan` Worker is read-only but may use narrowly allowed Git commands:
 
-The current runtime does not yet persist `last_sync_commit`; this is a planned Worker-registry feature.
+```text
+git status
+git log
+git diff
+git show
+git rev-parse
+```
 
-Read-only Workers should eventually be allowed narrowly scoped read-only Git operations such as status/log/diff/rev-parse so they can resynchronize safely.
+The runtime does not yet persist `last_sync_commit`, so V0.1 carries or conservatively rediscovers the relevant baseline. Automatic baseline tracking is V0.2.
 
 ---
 
 ## 12. Worker Dispatch Contract
 
-Routing and execution should receive a compact task contract rather than the Lead's entire conversation.
-
-Minimum dispatch information:
+Delegent sends a compact task contract rather than the Lead's full conversation:
 
 ```text
-TASK
+TASK:
 What must be accomplished.
 
-SCOPE
-Subsystem and mutation boundaries.
+SCOPE:
+Relevant subsystem and mutation boundaries.
 
-DECISIONS
-Already-fixed architectural/product decisions.
+DECISIONS:
+Already-fixed architectural/product/workflow decisions.
 
-CONSTRAINTS
-Behavior that must be preserved.
+CONSTRAINTS:
+Behavior and invariants that must be preserved.
 
-FORBIDDEN
-Decisions or files the Worker may not change.
+FORBIDDEN:
+Decisions, files, or changes the Worker may not make.
 
-SUCCESS
+SUCCESS:
 Observable verification criteria.
 ```
 
-This prevents accidental context leakage and keeps Worker startup focused.
+Do not pre-read a repository broadly merely to prepare this contract. If broad exploration belongs to the Worker, let the Worker perform it in its own context.
 
 ---
 
@@ -556,32 +422,24 @@ DECISIONS_NEEDED:
 REVIEW_TARGETS:
 ```
 
-The Worker must not return:
+Workers must not return entire source files, giant logs, hidden reasoning, complete repository maps, or irrelevant failed attempts.
 
-- entire source files;
-- giant logs;
-- hidden reasoning;
-- complete repository maps;
-- irrelevant failed attempts.
-
-Target principle:
-
-> A Worker may consume hundreds of thousands of tokens internally while the Lead receives only the compact evidence needed for decisions and review.
+The Lead may inspect specific `REVIEW_TARGETS` and evidence as needed, but should not repeat broad Worker exploration just to reconstruct the Worker's intermediate context.
 
 ---
 
 ## 14. Escalation
 
-### 14.1 Hard escalation — V0.1
+### Hard escalation — V0.1
 
-A Worker must stop and escalate immediately when it encounters:
+A Worker immediately stops and escalates when it encounters:
 
 - architecture ambiguity;
-- public API behavior changes;
+- public API behavior change;
 - schema semantics;
 - security-sensitive behavior;
 - conflicting requirements;
-- destructive/irreversible choices.
+- destructive or irreversible choices.
 
 Return:
 
@@ -594,86 +452,40 @@ Recommendation:
 Confidence:
 ```
 
-Lead decides; the existing Worker should resume when continuity remains useful.
+Lead resolves the decision. Reuse the existing Worker afterward when continuity remains useful.
 
-### 14.2 Trajectory escalation — future
+### Trajectory escalation — future
 
-Borrowing the pattern from Switchyard, a single recoverable failure should not automatically escalate. Repeated or corroborated failure may trigger escalation based on observable execution signals.
-
-Potential signals:
-
-- repeated same error;
-- repeated failed fix/test cycles;
-- long periods without productive writes/edits;
-- contradictory Worker conclusions;
-- context compaction/quality degradation;
-- Worker explicitly reporting low confidence.
-
-Exact thresholds must be calibrated on Delegent workloads; Switchyard's numeric thresholds must not be copied blindly.
+Repeated same errors, failed fix/test loops, prolonged unproductive activity, contradictory conclusions, context-quality degradation, or explicit low confidence may later trigger escalation. Exact thresholds must be calibrated on Delegent workloads rather than copied from Switchyard.
 
 ---
 
-## 15. Observability and Decision Provenance
+## 15. Switchyard-Derived Rules
 
-Every significant routing decision should eventually record:
+`migration-spec.md` is the provenance/reference document. This `spec.md` remains authoritative for product behavior.
 
-```text
-task_id
-workflow
-owner: lead | worker
-decision_source
-reason
-worker_id
-memory_action: reuse | fresh | none
-result: success | blocked | escalated
-escalation_reason
-```
+Adopted/adapted rules:
 
-Suggested stable decision sources:
-
-```text
-hard_lead_boundary
-context_heavy
-dispatch_overhead
-worker_affinity
-fresh_independence
-parallel_independence
-worker_escalation
-fallback
-```
-
-This follows Switchyard's useful pattern of recording not only a decision but **which component produced it**.
-
----
-
-## 16. Switchyard-Derived Design Rules
-
-`migration-spec.md` is the provenance/reference document. The authoritative product requirements remain in this `spec.md`.
-
-The adopted design rules are:
-
-1. **Separate placement from affinity.** Deciding Lead vs Worker is different from deciding how long a Worker assignment lives.
-2. **Distinguish delegated work from Worker maintenance.** Sync, compact, registry maintenance, and shutdown are not new engineering work units.
-3. **Use stable Worker identity.** Worker continuity requires project/scope/role/session identity rather than a raw session ID alone.
-4. **Classify/dispatch a compact delegated task.** Do not send the entire Lead conversation merely to route or start a Worker.
-5. **Use hard deterministic boundaries before fuzzy judgment.** Security/API/schema/architecture boundaries are not probabilistic.
-6. **Escalate from observed trajectory, not task size alone.** A Worker gets a chance to recover from ordinary failures.
-7. **Compress escalation and handoff context.** The Context Firewall applies during failure as well as success.
-8. **Record decision provenance.** Routing must be explainable and later calibratable.
-9. **Give runtime memory a lifecycle.** Persistent Workers must support resync, invalidation, retirement, and eventual cleanup.
+1. separate placement from affinity;
+2. distinguish delegated work from Worker maintenance;
+3. use stable Worker identity;
+4. dispatch compact delegated prompts rather than full Lead context;
+5. use hard deterministic boundaries before fuzzy judgment;
+6. escalate from observed trajectory rather than task size alone;
+7. compress escalation/handoff context;
+8. record decision provenance in later telemetry;
+9. give runtime memory a lifecycle.
 
 Explicit non-migrations:
 
-- Switchyard's per-turn strong/weak stage mapping;
-- its proxy/protocol translation layer;
-- its assumption that exploration should route to a stronger tier;
-- its exact thresholds and TTLs.
+- Switchyard per-turn strong/weak stage mapping;
+- proxy/protocol translation as a Delegent concern;
+- the assumption that exploration should route to the stronger tier;
+- Switchyard's exact thresholds or TTLs.
 
 ---
 
-## 17. Repository Structure
-
-Target structure:
+## 16. Repository Structure
 
 ```text
 skills/
@@ -687,11 +499,14 @@ skills/
    │  ├─ routing-policy.md
    │  ├─ worker-memory.md
    │  ├─ worker-contract.md
-   │  ├─ worker-agent.md
-   │  └─ escalation-policy.md        # future / when trajectory policy lands
+   │  └─ worker-agent.md
    └─ scripts/
       └─ nemotron-worker.ps1
 
+evals/
+└─ v0.1-smoke.md
+
+README.md
 spec.md
 migration-spec.md
 ```
@@ -700,108 +515,81 @@ Responsibilities:
 
 ```text
 Delegent
-→ orchestration entry point and workflow completion
+→ orchestration entry point + workflow completion
 
 delegating-work
-→ work-unit placement and Worker-selection policy
+→ work-unit placement + Worker-selection policy
 
 worker-agent / scripts / opencode.json
-→ how the configured Worker is executed
+→ configured Worker execution
+
+evals
+→ repeatable routing/orchestration validation
 
 migration-spec.md
-→ external design provenance and adopt/adapt/reject rationale
+→ external design provenance + adopt/adapt/reject rationale
 ```
 
 ---
 
-## 18. Current Implementation Status
-
-As of the current repository state:
+## 17. Current Implementation Status
 
 ### Implemented
 
-- `delegating-work` Lead-vs-Worker policy
+- `skills/delegent/SKILL.md` orchestration entry point
+- `$delegent $<one-workflow>` composition contract
+- `delegating-work` Lead-vs-Worker placement policy
 - context-value and dispatch-overhead gates
 - safe-parallelism guidance
 - Worker reuse vs fresh policy
-- compressed Worker contract and hard decision escalation
+- compact Worker dispatch contract
+- compressed handoff contract
+- hard Lead-owned decision escalation
 - OpenCode/Nemotron configuration
+- read-only `plan` and mutating `build` Worker roles
 - PowerShell Worker wrapper
-- manual OpenCode session reuse
+- wrapper-scoped OpenCode session discovery
+- manual/deterministic session reuse via stable titles
+- narrowly allowed read-only Git resynchronization commands
+- V0.1 smoke-evaluation matrix
+- development installation/usage README
 
 ### Partial / policy-only
 
-- Worker staleness resynchronization
-- persistent Worker memory lifecycle
-- project memory conventions
+- Worker staleness resynchronization: Git primitives exist, but `last_sync_commit` is not persisted
+- persistent Worker lifecycle
+- persistent project-memory conventions
 
 ### Not yet implemented
 
-- `skills/delegent/SKILL.md` orchestration entry point
 - automatic Worker registry / affinity
 - automatic `last_sync_commit` tracking
 - trajectory-based escalation
 - routing telemetry/evaluation logging
-- multi-worker parallel runtime
-- evaluation suite
+- multi-Worker parallel runtime
+- automated evaluation runner
 
 ---
 
-## 19. V0.1 Scope From This Point
+## 18. V0.1 Acceptance
 
-V0.1 should now mean **a usable Delegent orchestration loop**, not merely a routing document.
+V0.1 should be considered usable when representative tasks in `evals/v0.1-smoke.md` demonstrate:
 
-Required milestones:
-
-1. Add `skills/delegent/SKILL.md`.
-2. Support the UX `$delegent $<one-workflow>`.
-3. Preserve the selected workflow's semantics.
-4. Use `delegating-work` to choose Lead vs Worker per significant work unit.
-5. Invoke the existing OpenCode/Nemotron Worker path.
-6. Support manual or deterministic session reuse without losing the Context Firewall.
-7. Enforce Worker handoff and hard escalation contracts.
-8. Keep final acceptance with Lead.
-9. Run representative end-to-end smoke/evaluation tasks.
-
-Automatic Worker registry and trajectory escalation may land immediately after this core loop if they are not necessary for the first end-to-end test.
-
----
-
-## 20. Validation
-
-Collect 10–20 representative engineering tasks, including:
-
-1. broad repository exploration;
-2. a high-impact architecture decision;
-3. approved implementation;
-4. multi-file mechanical refactor;
-5. test/debug loop;
-6. security-sensitive decision boundary;
-7. same-subsystem follow-up that should reuse a Worker;
-8. unrelated work that should create a fresh Worker;
-9. independent code review;
-10. Worker failure requiring escalation.
-
-Record:
-
-```text
-workflow
-expected owner
-actual owner
-expected memory action
-actual memory action
-Lead duplicated Worker exploration?
-handoff sufficient?
-escalation correct?
-task succeeded?
-Lead context burden
-```
+- `$delegent $<workflow>` has predictable semantics;
+- workflow completion requirements are preserved;
+- high-impact decisions stay with Lead;
+- context-heavy execution moves to Workers;
+- related follow-up can deliberately reuse a Worker;
+- independent review can deliberately start fresh;
+- hard decision escalation works;
+- Worker trajectory/log noise stays behind the Context Firewall;
+- final acceptance remains with Lead.
 
 Useful evaluation quadrants adapted from Switchyard:
 
 ```text
 DELEGATE_SAFE
-Worker succeeds and Lead intervention is unnecessary.
+Worker succeeds; Lead intervention is unnecessary.
 
 DELEGATE_LOSS
 Worker fails where Lead ownership would likely have succeeded.
@@ -815,49 +603,13 @@ Neither ownership strategy succeeds cleanly.
 
 ---
 
-## 21. Success Criteria
-
-V0.1 succeeds when:
-
-### Workflow
-
-- `$delegent $<workflow>` has a predictable meaning;
-- the selected workflow's completion requirements are preserved;
-- Lead remains responsible for final acceptance.
-
-### Routing
-
-- context-heavy work is consistently delegated;
-- high-impact decisions remain with Lead;
-- trivial tasks are not excessively delegated.
-
-### Context Firewall
-
-- Lead avoids broad repository exploration when a Worker can do it;
-- Worker trajectory/log/test noise does not flood Lead context;
-- handoffs contain enough evidence to review results.
-
-### Memory
-
-- related follow-up work can reuse a Worker;
-- independent review can deliberately use a fresh Worker;
-- stale context is detected or conservatively invalidated.
-
-### Safety / quality
-
-- Workers escalate Lead-owned decisions;
-- Worker mutation scope is respected;
-- final acceptance cannot be delegated away.
-
----
-
-## 22. Future Versions
+## 19. Next Milestones
 
 ### V0.2
 
-- Worker registry and stable Worker identities
+- automatic Worker registry and stable Worker identities
 - automatic session lookup/reuse
-- Git-based resynchronization and `last_sync_commit`
+- Git-based resynchronization with persisted `last_sync_commit`
 - trajectory failure signals and escalation
 - decision-source logging
 
@@ -877,15 +629,13 @@ V0.1 succeeds when:
 
 ---
 
-## 23. Design Principle
-
-The system optimizes where context and judgment live:
+## 20. Design Principle
 
 ```text
-Lead   = strategic memory + high-impact judgment
-Worker = repository context + execution memory
-Repo   = durable project knowledge
-Delegent = orchestration across those boundaries
+Lead      = strategic memory + high-impact judgment
+Worker    = repository context + execution memory
+Repo      = durable project knowledge
+Delegent  = orchestration across those boundaries
 ```
 
 The user chooses **what workflow to run**. Delegent decides **where each unit of work should live** while preserving workflow semantics, Worker continuity, the Context Firewall, and Lead ownership of consequential decisions.
