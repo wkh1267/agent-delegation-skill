@@ -20,9 +20,14 @@ V0.1 expects exactly one companion workflow skill. The workflow owns **what must
 
 ## Preserve the selected workflow
 
-Follow the companion workflow's instructions and completion gates in full. Do not weaken, skip, or replace its required testing, review, or completion steps merely because work is delegated.
+Follow the companion workflow's instructions and completion gates in full. Do not weaken, skip, replace, or reconstruct its required testing, review, or completion steps merely because work is delegated.
 
-Before assigning significant work, load and follow the `delegating-work` skill. If `delegating-work` is unavailable, stop rather than inventing a replacement routing policy.
+Before assigning significant work:
+
+1. verify that the explicitly selected companion workflow is actually available and load its instructions;
+2. load and follow the `delegating-work` skill.
+
+If the companion workflow is unavailable, stop with a setup error. Do **not** invent, approximate, or fall back to guessed workflow semantics. If `delegating-work` is unavailable, stop rather than inventing a replacement routing policy.
 
 ## Orchestration loop
 
@@ -44,9 +49,13 @@ Workers should retain execution context: repository exploration, source relation
 
 A Worker may use large intermediate context, but its handoff must stay concise and evidence-oriented.
 
+The Context Firewall is not only a prompt convention. The Worker adapter must eventually provide a structured transport boundary that separates Worker trajectory from the terminal handoff and rejects malformed protocol output before it reaches Lead context.
+
 ## Worker runtime
 
 `delegating-work` owns placement and Worker-selection policy. Provider- and harness-specific execution belongs to the configured Worker adapter. In this repository, that adapter is documented under `../delegating-work/references/worker-agent.md` and currently uses OpenCode with Nemotron.
+
+Treat Worker-adapter code that loads credentials, constructs provider process state, parses Worker protocol output, or controls session storage as **security-sensitive runtime code**. A Worker may perform read-only diagnosis of that code, but mutation requires explicit Lead ownership and Lead review. Do not allow a general build Worker to rewrite credential-loading or protocol-boundary code autonomously.
 
 Do not hardcode provider/model behavior into workflow reasoning when the abstract Worker contract is sufficient.
 
