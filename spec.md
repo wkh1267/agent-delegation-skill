@@ -354,11 +354,11 @@ Persist only stable, expensive-to-rediscover facts such as invariants and durabl
 Before reusing a Worker:
 
 ```text
-previous repository state
+last_sync_commit
         ↓
 compare with current HEAD
         ↓
-inspect relevant changes
+inspect the complete changed-path set
         ↓
 refresh affected mental model
         ↓
@@ -375,7 +375,9 @@ git show
 git rev-parse
 ```
 
-The runtime does not yet persist `last_sync_commit`, so V0.1 carries or conservatively rediscovers the relevant baseline. Automatic baseline tracking is V0.2.
+Exact staleness detection requires the Worker's actual `last_sync_commit`. Arbitrary heuristics such as `HEAD~N` are not equivalent because they do not prove what changed since that Worker last synchronized. Evidence scope must also match conclusion scope: inspecting only one changed file is not enough to make a repository-wide staleness claim.
+
+The runtime does not yet persist `last_sync_commit`; this is now a validated V0.2 functional requirement rather than only an optimization. When an exact baseline is unavailable in V0.1, resynchronize conservatively rather than inventing one.
 
 ---
 
@@ -421,6 +423,8 @@ RISKS:
 DECISIONS_NEEDED:
 REVIEW_TARGETS:
 ```
+
+Every field is required exactly once. Use `none` only when a field genuinely does not apply.
 
 Workers must not return entire source files, giant logs, hidden reasoning, complete repository maps, or irrelevant failed attempts.
 
@@ -554,14 +558,29 @@ migration-spec.md
 - V0.1 smoke-evaluation matrix
 - development installation/usage README
 
+### Validated by direct-Worker smoke tests
+
+- OpenCode -> NVIDIA NIM -> Nemotron `plan` Worker execution
+- plan permission enforcement and recovery from a denied general-shell attempt
+- compact Worker handoff / Context Firewall output behavior
+- same-session follow-up continuity and reuse-policy behavior
+- read-only Git resynchronization primitives
+- targeted refresh without broad repository rereading
+
+### Fixes applied from smoke findings; re-test required
+
+- Worker prompts now explicitly require every handoff field exactly once after one follow-up omitted `CHANGES`, `TESTS`, and `RISKS`
+- the `plan` prompt now explicitly prefers native read/search tools and avoids general shell listing attempts such as `ls -la`
+
 ### Partial / policy-only
 
-- Worker staleness resynchronization: Git primitives exist, but `last_sync_commit` is not persisted
+- Worker staleness resynchronization: Git primitives work, but exact baseline detection is incomplete because `last_sync_commit` is not persisted
 - persistent Worker lifecycle
 - persistent project-memory conventions
 
-### Not yet implemented
+### Not yet implemented / not yet validated
 
+- full Codex Lead -> `$delegent $workflow` -> Worker -> compact handoff -> Lead acceptance loop has not yet been validated end to end
 - automatic Worker registry / affinity
 - automatic `last_sync_commit` tracking
 - trajectory-based escalation
@@ -585,6 +604,21 @@ V0.1 should be considered usable when representative tasks in `evals/v0.1-smoke.
 - Worker trajectory/log noise stays behind the Context Firewall;
 - final acceptance remains with Lead.
 
+Current direct-Worker status:
+
+```text
+OpenCode/NIM/Nemotron execution        PASS
+plan permission enforcement           PASS
+compact handoff / Context Firewall    PASS
+same-session continuity               PASS
+reuse-policy behavior                 PASS
+read-only Git resync primitives       PASS
+targeted refresh                      PASS
+handoff completeness fix              APPLIED; RE-TEST NEEDED
+exact staleness baseline              PARTIAL; V0.2 REGISTRY REQUIRED
+full Delegent orchestration           NOT YET VALIDATED
+```
+
 Useful evaluation quadrants adapted from Switchyard:
 
 ```text
@@ -604,6 +638,13 @@ Neither ownership strategy succeeds cleanly.
 ---
 
 ## 19. Next Milestones
+
+### Immediate V0.1 validation
+
+- re-test complete handoff after prompt tightening
+- validate the actual Codex Lead -> `$delegent $implement` -> Worker -> handoff -> Lead acceptance path
+- validate a fresh independent review Worker
+- validate hard decision escalation through the top-level orchestration loop
 
 ### V0.2
 
@@ -632,10 +673,10 @@ Neither ownership strategy succeeds cleanly.
 ## 20. Design Principle
 
 ```text
-Lead      = strategic memory + high-impact judgment
-Worker    = repository context + execution memory
-Repo      = durable project knowledge
-Delegent  = orchestration across those boundaries
+Lead     = strategic memory + high-impact judgment
+Worker   = repository context + execution memory
+Repo     = durable project knowledge
+Delegent = orchestration across those boundaries
 ```
 
-The user chooses **what workflow to run**. Delegent decides **where each unit of work should live** while preserving workflow semantics, Worker continuity, the Context Firewall, and Lead ownership of consequential decisions.
+The user chooses **what workflow to run**. Delegent decides **where each significant unit should live** while preserving workflow semantics, Worker continuity, the Context Firewall, and Lead ownership of consequential decisions.
