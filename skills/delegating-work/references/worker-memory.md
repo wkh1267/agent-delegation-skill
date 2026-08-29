@@ -35,11 +35,36 @@ and reuse the matching session with `--session <session-id>`.
 Do not reuse a session merely because its title matches. First confirm that its
 scope and role still fit the task and that its working memory is trustworthy.
 
-Before reuse, compare the worker's last known repository state with the current
+## Resynchronization
+
+Before reuse, compare the Worker's last known repository state with the current
 state and inspect relevant changes. Do not reread the whole repository unless
-those changes invalidate the worker's model. The current runtime does not yet
-persist `last_sync_commit`, so carry it in the task/handoff when known or
-conservatively rediscover the relevant baseline.
+those changes invalidate the Worker's model.
+
+The exact long-term baseline contract is:
+
+```text
+last_sync_commit
+      ↓
+git diff last_sync_commit..HEAD
+      ↓
+inspect the complete changed-path set
+      ↓
+refresh only affected knowledge
+      ↓
+continue
+```
+
+Do not substitute an arbitrary relative window such as `HEAD~N` for
+`last_sync_commit`; it cannot prove what changed since the Worker actually
+synchronized. Likewise, evidence gathered from one file must not be generalized
+into a repository-wide staleness conclusion unless the complete changed-path set
+supports it.
+
+The current runtime does not yet persist `last_sync_commit`, so exact automatic
+staleness detection remains incomplete. Carry an exact baseline in the task or
+handoff when known. If it is not known, use conservative resynchronization rather
+than inventing a baseline.
 
 Persist only stable, expensive-to-rediscover project facts in repository
 documentation. Keep raw logs, failed hypotheses, and transient debugging state
