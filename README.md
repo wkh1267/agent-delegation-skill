@@ -70,6 +70,19 @@ Known smoke-test findings:
 
 Detailed observations are recorded in [`evals/v0.1-smoke.md`](evals/v0.1-smoke.md).
 
+Next V0.1 checkpoint:
+
+```text
+Codex Lead
+  -> $delegent $implement
+  -> delegating-work placement
+  -> OpenCode/Nemotron Worker
+  -> compact handoff
+  -> Lead review/final acceptance
+```
+
+Direct Worker success is not yet proof that this complete top-level orchestration loop works end to end.
+
 Not yet implemented:
 
 - automatic Worker registry and `last_sync_commit` tracking
