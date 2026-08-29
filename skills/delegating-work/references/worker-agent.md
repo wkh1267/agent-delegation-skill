@@ -1,8 +1,20 @@
 # Nemotron Worker
 
 Install OpenCode. The wrapper loads `api_key` from the ignored `.env` beside
-`opencode.json` and keeps all delegated-worker OpenCode state under one runtime
-directory; never commit `.env`.
+`opencode.json`; never commit `.env`.
+
+Delegated-worker OpenCode state uses one wrapper-controlled runtime root so
+session listing and reuse always see the same storage. By default the wrapper
+prefers:
+
+```text
+%LOCALAPPDATA%\agent-delegation-skills\opencode
+```
+
+Set `DELEGENT_RUNTIME` to choose another durable location. If the default local
+app-data directory is unavailable, the wrapper falls back to the system temp
+directory; that fallback keeps delegation working but should not be relied on
+for long-lived Worker memory.
 
 ```powershell
 npm install -g opencode-ai
