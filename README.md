@@ -48,6 +48,7 @@ Implemented:
 - OpenCode/Nemotron Worker adapter
 - read-only `plan` and mutating `build` Worker roles
 - wrapper-scoped OpenCode session discovery/reuse
+- durable-first Worker session storage
 - stable title convention for manual/deterministic Worker affinity
 - limited read-only Git commands for Worker resynchronization
 
@@ -126,6 +127,14 @@ $delegent $implement
 The user selects the workflow and desired outcome. Delegent decides where each significant work unit should live, whether a Worker should be reused or created fresh, and when work must return to the Lead for a consequential decision or final acceptance.
 
 ## Worker sessions
+
+The Worker wrapper keeps OpenCode state under one controlled runtime root. It prefers:
+
+```text
+%LOCALAPPDATA%\agent-delegation-skills\opencode
+```
+
+Set `DELEGENT_RUNTIME` to choose another durable location. If the durable default cannot be created, the wrapper falls back to the system temp directory; that fallback should not be relied on for long-lived Worker memory.
 
 List only the sessions created in the delegated-worker runtime:
 
