@@ -20,6 +20,28 @@ Use the build agent only when the task explicitly permits changes:
 & "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" --agent build --dir "<project-path>" "<task>"
 ```
 
+## Persistent session titles
+
+When a Worker is expected to survive follow-up work, give it a stable title so
+V0.1 can find it without a registry:
+
+```text
+delegent:<project>:<scope>:<role>
+```
+
+Example:
+
+```powershell
+& "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" `
+  --agent build `
+  --dir "<project-path>" `
+  --title "delegent:personal-assistant-backend:scheduler:build" `
+  "<task>"
+```
+
+Use a fresh title/session for independent review or other work where prior
+assumptions are intentionally undesirable.
+
 ## Session reuse
 
 Always list delegated-worker sessions through the wrapper so OpenCode reads the
@@ -35,7 +57,8 @@ For machine-readable output:
 & "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" sessions --format json
 ```
 
-Reuse a session when `worker-memory.md` calls for continuity:
+Match the stable title described by `worker-memory.md`, then reuse the session
+when its scope, role, and memory are still suitable:
 
 ```powershell
 & "$env:USERPROFILE\.agents\skills\delegating-work\scripts\nemotron-worker.ps1" --agent <plan-or-build> --dir "<project-path>" --session <session-id> "<task>"
