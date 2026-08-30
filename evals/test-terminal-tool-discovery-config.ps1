@@ -1,9 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$protocolPath = Join-Path $repoRoot 'skills\delegating-work\scripts\worker-terminal-protocol.ps1'
 $wrapperPath = Join-Path $repoRoot 'skills\delegating-work\scripts\nemotron-worker.ps1'
-$skillRoot = Join-Path $repoRoot 'skills\delegating-work'
-. $protocolPath
+$pluginPath = Join-Path $repoRoot 'skills\delegating-work\plugins\delegent-terminal.js'
 
 function Assert-True {
     param(
@@ -13,28 +11,24 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('delegent-discovery-' + [Guid]::NewGuid().ToString('N'))
-try {
-    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
-    $target = Install-DelegentTerminalTools -SkillRoot $skillRoot -ConfigDir $tempRoot
+Assert-True (Test-Path -LiteralPath $pluginPath -PathType Leaf) 'Delegent terminal plugin must exist.'
+$pluginUri = ([System.Uri]::new((Resolve-Path -LiteralPath $pluginPath).Path)).AbsoluteUri
+Assert-True ($pluginUri -match '^file:///') 'Terminal plugin path must convert to a file URI on Windows.'
 
-    Assert-True ((Split-Path -Leaf $target) -eq 'tools') 'Terminal tools must live in the explicit config directory tools child.'
-    Assert-True ((Split-Path -Parent $target) -eq $tempRoot) 'Terminal tool installer must not add an inferred opencode directory.'
-    Assert-True (Test-Path -LiteralPath (Join-Path $target 'delegent_handoff.ts'))
-    Assert-True (Test-Path -LiteralPath (Join-Path $target 'delegent_decision.ts'))
+$plugin = Get-Content -Raw $pluginPath
+Assert-True ($plugin -match 'delegent_handoff') 'Terminal plugin must register delegent_handoff.'
+Assert-True ($plugin -match 'delegent_decision') 'Terminal plugin must register delegent_decision.'
+Assert-True ($plugin -notmatch '@opencode-ai/plugin|Invoke-RestMethod|Invoke-WebRequest|api_key|nvapi-') 'Terminal plugin must be dependency-free and credential-blind.'
 
-    $wrapper = Get-Content -Raw $wrapperPath
-    Assert-True ($wrapper -match 'OPENCODE_CONFIG_DIR') 'Wrapper must set an explicit OpenCode config directory.'
-    Assert-True ($wrapper -match 'Install-DelegentTerminalTools') 'Wrapper must use the shared terminal tool installer.'
-    Assert-True ($wrapper -notmatch "XDG_CONFIG_HOME\s+'opencode\\\\tools'") 'Wrapper must not infer terminal discovery from XDG_CONFIG_HOME.'
-    Assert-True ($wrapper -match 'DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS') 'Wrapper must expose a bounded cold-bootstrap timeout override.'
-    Assert-True ($wrapper -match '\$bootstrapTimeoutSeconds\s*=\s*60') 'Cold terminal-tool bootstrap must have a bounded default window.'
-    Assert-True ($wrapper -match 'terminal_tool_bootstrap_timeout') 'Bootstrap timeout must have a deterministic protocol error.'
-    Assert-True ($wrapper -match 'terminal_tool_catalog_error') 'Catalog failure must have a deterministic protocol error.'
+$wrapper = Get-Content -Raw $wrapperPath
+Assert-True ($wrapper -match 'plugins\\delegent-terminal\.js') 'Wrapper must resolve the Delegent terminal plugin.'
+Assert-True ($wrapper -match 'terminalPluginUri') 'Wrapper must add the local plugin URI to OpenCode config content.'
+Assert-True ($wrapper -match 'Add-Member.+plugin') 'Wrapper must explicitly register the plugin when the base config has no plugin field.'
+Assert-True ($wrapper -match 'OPENCODE_CONFIG_DIR\s*=\s*\$null') 'Wrapper must not depend on explicit config-directory tool discovery.'
+Assert-True ($wrapper -notmatch 'Install-DelegentTerminalTools\s+-SkillRoot') 'Wrapper must not use the legacy terminal-tool installer.'
+Assert-True ($wrapper -match 'delegent_handoff\.ts' -and $wrapper -match 'delegent_decision\.ts') 'Wrapper must clean stale Delegent tool files from earlier discovery experiments.'
+Assert-True ($wrapper -match 'DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS') 'Wrapper must retain a bounded catalog/bootstrap timeout override.'
+Assert-True ($wrapper -match '\$bootstrapTimeoutSeconds\s*=\s*60') 'Terminal plugin registration check must have a bounded default window.'
 
-    Write-Output 'PASS explicit terminal tool discovery config'
-    exit 0
-}
-finally {
-    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
+Write-Output 'PASS explicit terminal plugin registration'
+exit 0
