@@ -11,8 +11,8 @@ Delegent remains workflow-agnostic. Matt Pocock's `implement` workflow is a late
 ```text
 A. Worker protocol — fake/local                         PASS (initial structured design)
 A.5 Live compatibility isolation                       PASS/isolated blocker
-A.6 Terminal-tool protocol implementation + fake tests CURRENT
-A.7 Live terminal-tool Worker probe                    NEXT after A.6 tests pass
+A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 Windows PowerShell 5.1)
+A.7 Live terminal-tool Worker probe                    NEXT
 B. Controlled Delegent composition
    B1 trivial Lead-owned routing
    B2 controlled delegated routing
@@ -47,7 +47,7 @@ Removing the HTTP message `agent` field did not fix the failure. Therefore the a
 
 ## Phase A.6 — terminal custom-tool protocol
 
-Replace the broken special `format: json_schema` transport with normal OpenCode custom tools:
+The broken special `format: json_schema` transport was replaced with normal OpenCode custom tools:
 
 ```text
 delegent_handoff
@@ -70,7 +70,7 @@ delegent_decision
 
 The tools are side-effect free and are installed only into the wrapper-controlled OpenCode config root. The adapter reads only `parts[].state.input` for exactly one terminal Delegent tool call.
 
-Deterministic local acceptance must cover at least:
+Deterministic acceptance covers:
 
 - valid handoff;
 - valid decision escalation;
@@ -89,11 +89,20 @@ Deterministic local acceptance must cover at least:
 - wrapper flag/session compatibility;
 - server lifecycle cleanup.
 
+Final local result:
+
+```text
+Windows PowerShell 5.1
+PASS 18/18
+```
+
+The suite is also retained as a Windows GitHub Actions regression check. During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
+
 No real NIM call is needed for these deterministic tests.
 
 ## Phase A.7 — live terminal-tool probe
 
-Only after A.6 deterministic tests pass, run one bounded read-only Worker call through the wrapper.
+A.6 has passed. Run one bounded read-only Worker call through the wrapper.
 
 From the repository root:
 
