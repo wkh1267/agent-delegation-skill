@@ -27,6 +27,7 @@ jobs:
           Invoke-TestScript .\evals\test-terminal-tool-catalog.ps1
           Invoke-TestScript .\evals\test-terminal-tool-discovery-config.ps1
           Invoke-TestScript .\evals\test-codex-nim-bootstrap.ps1
+          Invoke-TestScript .\evals\test-codex-nim-smoke-assets.ps1
 
           $tokens = $null
           $errors = $null
