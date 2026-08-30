@@ -85,16 +85,19 @@ function Get-SafeFailureClass {
     if ($null -eq $ProcessExitCode -or $ProcessExitCode -eq 0) { return 'none' }
     if ([string]::IsNullOrWhiteSpace($CapturedStderr)) { return 'startup_error_no_stderr' }
 
-    if ($CapturedStderr -match '(?i)(profile).*(not found|missing|unknown|does not exist)|failed to load.*profile') {
-        return 'profile_config_error'
-    }
     if ($CapturedStderr -match '(?i)(unexpected argument|unknown argument|unrecognized option|invalid value.*--|usage:)') {
         return 'cli_argument_error'
     }
-    if ($CapturedStderr -match '(?i)(unknown field|unrecognized field|strict.config|failed to load.*config|failed to parse.*config|config\.toml)') {
+    if ($CapturedStderr -match '(?i)(Error loading config\.toml|unknown field|unrecognized field|strict.config|failed to load.*config|failed to parse.*config|config\.toml)') {
         return 'config_error'
     }
-    if ($CapturedStderr -match '(?i)(401|403|unauthorized|forbidden|authentication|api key|credential)') {
+    if ($CapturedStderr -match '(?i)(Not inside a trusted directory|skip-git-repo-check)') {
+        return 'git_trust_error'
+    }
+    if ($CapturedStderr -match '(?i)(failed to initialize in-process app-server client)') {
+        return 'app_server_init_error'
+    }
+    if ($CapturedStderr -match '(?i)(401|403|unauthorized|forbidden|authentication|api key|credential|NIM_API_KEY)') {
         return 'auth_error'
     }
     if ($CapturedStderr -match '(?i)(responses|request failed|http status|status code|429|500|502|503|504)') {
@@ -138,17 +141,13 @@ $codexCommand = Get-Command codex -CommandType Application, ExternalScript -Erro
 $codexVersion = (& $codexCommand.Source --version 2>$null | Select-Object -First 1)
 if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) { $codexVersion = 'unknown' }
 
-# Recreate the isolated NIM provider + Profile V2 layer before every smoke so
-# the probe never depends on the user's normal ~/.codex configuration.
+# Recreate the dedicated NIM Worker CODEX_HOME before every smoke so the probe
+# never depends on the user's normal ~/.codex configuration or stale profiles.
 & (Join-Path $PSScriptRoot 'setup-codex-nim.ps1') -RuntimeRoot $RuntimeRoot | Out-Null
 $codexHome = Join-Path $RuntimeRoot 'codex-home'
 $configPath = Join-Path $codexHome 'config.toml'
-$profilePath = Join-Path $codexHome 'nim-worker.config.toml'
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-    throw 'Isolated Codex NIM base config was not created.'
-}
-if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
-    throw 'Isolated Codex NIM Profile V2 layer was not created.'
+    throw 'Isolated Codex NIM config was not created.'
 }
 
 $oldCodexHome = $env:CODEX_HOME
@@ -163,7 +162,7 @@ try {
     $env:CODEX_HOME = $codexHome
     $env:NIM_API_KEY = $key
 
-    $codexArgs = 'exec --strict-config -p nim-worker --ephemeral --json --sandbox read-only --ignore-rules -'
+    $codexArgs = 'exec --strict-config --ephemeral --json --sandbox read-only --ignore-rules -'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $launchSpec.FileName
     $startInfo.Arguments = $launchSpec.ArgumentsPrefix + $codexArgs + $launchSpec.ArgumentsSuffix
@@ -185,10 +184,7 @@ try {
 
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $timedOut = $true
-        try {
-            & taskkill.exe /PID $process.Id /T /F 1>$null 2>$null
-        }
-        catch {}
+        try { & taskkill.exe /PID $process.Id /T /F 1>$null 2>$null } catch {}
         try { $process.WaitForExit(5000) | Out-Null } catch {}
     }
 
@@ -210,12 +206,8 @@ $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteS
 $events = @()
 $decodeErrors = 0
 foreach ($line in $lines) {
-    try {
-        $events += ($line | ConvertFrom-Json -ErrorAction Stop)
-    }
-    catch {
-        $decodeErrors++
-    }
+    try { $events += ($line | ConvertFrom-Json -ErrorAction Stop) }
+    catch { $decodeErrors++ }
 }
 
 $threadEvents = @($events | Where-Object { $_.type -eq 'thread.started' })
@@ -257,9 +249,9 @@ Write-Output 'CODEX_NIM_SMOKE'
 Write-Output "codex_version=$([string]$codexVersion)"
 Write-Output "codex_launcher=$($launchSpec.Kind)"
 Write-Output "codex_home=$codexHome"
-Write-Output 'profile=nim-worker'
-Write-Output 'profile_format=v2-layer'
-Write-Output "profile_file_exists=$([bool](Test-Path -LiteralPath $profilePath -PathType Leaf))"
+Write-Output 'config_mode=isolated-default'
+Write-Output 'model=nvidia/nemotron-3-super-120b-a12b'
+Write-Output 'model_provider=nim'
 Write-Output 'sandbox=read-only'
 Write-Output 'ephemeral=True'
 Write-Output 'json_mode=True'

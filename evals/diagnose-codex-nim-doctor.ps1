@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$RuntimeRoot
+    [string]$RuntimeRoot,
+    [ValidateRange(15, 180)]
+    [int]$TimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +28,52 @@ function Get-NimCredential {
         }
     }
     return $null
+}
+
+function Get-CodexLaunchSpec {
+    $native = Get-Command codex.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($native) {
+        return [pscustomobject]@{
+            VersionCommand = $native.Source
+            FileName = $native.Source
+            ArgumentsPrefix = ''
+            ArgumentsSuffix = ''
+            Kind = 'native'
+        }
+    }
+
+    $command = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $command) { return $null }
+
+    $extension = [IO.Path]::GetExtension([string]$command.Source).ToLowerInvariant()
+    if ($extension -eq '.ps1') {
+        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $powershell.Source
+            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
+            ArgumentsSuffix = ''
+            Kind = 'powershell-shim'
+        }
+    }
+    if ($extension -eq '.cmd' -or $extension -eq '.bat') {
+        $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $comspec
+            ArgumentsPrefix = ('/d /s /c ""' + $command.Source + '" ')
+            ArgumentsSuffix = '"'
+            Kind = 'cmd-shim'
+        }
+    }
+
+    return [pscustomobject]@{
+        VersionCommand = $command.Source
+        FileName = $command.Source
+        ArgumentsPrefix = ''
+        ArgumentsSuffix = ''
+        Kind = 'application'
+    }
 }
 
 function Get-DoctorCheck {
@@ -83,8 +131,8 @@ if ([string]::IsNullOrWhiteSpace($key)) {
 }
 $key = $key.Trim('"').Trim("'")
 
-$codexCommand = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $codexCommand) {
+$launchSpec = Get-CodexLaunchSpec
+if ($null -eq $launchSpec) {
     Write-Output 'CODEX_NIM_DOCTOR'
     Write-Output 'credential_present=True'
     Write-Output 'codex_found=False'
@@ -94,32 +142,51 @@ if (-not $codexCommand) {
     exit 1
 }
 
+$codexCommand = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+$codexVersion = (& $codexCommand.Source --version 2>$null | Select-Object -First 1)
+if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) { $codexVersion = 'unknown' }
+
 & (Join-Path $PSScriptRoot 'setup-codex-nim.ps1') -RuntimeRoot $RuntimeRoot | Out-Null
 $codexHome = Join-Path $RuntimeRoot 'codex-home'
-$profilePath = Join-Path $codexHome 'nim-worker.config.toml'
+$configPath = Join-Path $codexHome 'config.toml'
 
 $oldCodexHome = $env:CODEX_HOME
 $oldNimApiKey = $env:NIM_API_KEY
+$process = $null
+$timedOut = $false
 $doctorStdout = ''
 $doctorStderr = ''
 $doctorExitCode = $null
-$stdoutPath = Join-Path $RuntimeRoot ('doctor-stdout-' + [Guid]::NewGuid().ToString('N') + '.txt')
-$stderrPath = Join-Path $RuntimeRoot ('doctor-stderr-' + [Guid]::NewGuid().ToString('N') + '.txt')
 
 try {
-    New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
     $env:CODEX_HOME = $codexHome
     $env:NIM_API_KEY = $key
 
-    & $codexCommand.Source -p nim-worker doctor --json 1>$stdoutPath 2>$stderrPath
-    $doctorExitCode = $LASTEXITCODE
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $launchSpec.FileName
+    $startInfo.Arguments = $launchSpec.ArgumentsPrefix + 'doctor --json' + $launchSpec.ArgumentsSuffix
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
 
-    if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-        $doctorStdout = [IO.File]::ReadAllText($stdoutPath)
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw 'Codex doctor process did not start.' }
+
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $timedOut = $true
+        try { & taskkill.exe /PID $process.Id /T /F 1>$null 2>$null } catch {}
+        try { $process.WaitForExit(5000) | Out-Null } catch {}
     }
-    if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-        $doctorStderr = [IO.File]::ReadAllText($stderrPath)
-    }
+
+    if ($process.HasExited) { $doctorExitCode = $process.ExitCode }
+    try { $doctorStdout = [string]$stdoutTask.Result } catch { $doctorStdout = '' }
+    try { $doctorStderr = [string]$stderrTask.Result } catch { $doctorStderr = '' }
 }
 finally {
     if ($null -eq $oldCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
@@ -128,8 +195,7 @@ finally {
     if ($null -eq $oldNimApiKey) { Remove-Item Env:NIM_API_KEY -ErrorAction SilentlyContinue }
     else { $env:NIM_API_KEY = $oldNimApiKey }
 
-    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $process) { $process.Dispose() }
 }
 
 $credentialLeakDetected = $doctorStdout.Contains($key) -or $doctorStderr.Contains($key)
@@ -163,7 +229,7 @@ $expectedModel = 'nvidia/nemotron-3-super-120b-a12b'
 $configLoaded = $configStatus -match '^(?i:ok)$'
 $providerSelected = $activeProvider -ceq 'nim'
 $modelSelected = $activeModel -ceq $expectedModel
-$doctorSucceeded = ($doctorExitCode -eq 0 -and $decodeOk)
+$doctorSucceeded = (-not $timedOut -and $doctorExitCode -eq 0 -and $decodeOk)
 $overallPass = (
     $doctorSucceeded -and
     $configLoaded -and
@@ -174,13 +240,14 @@ $overallPass = (
 )
 
 Write-Output 'CODEX_NIM_DOCTOR'
-Write-Output "codex_version=$([string]((& $codexCommand.Source --version 2>$null | Select-Object -First 1)))"
+Write-Output "codex_version=$([string]$codexVersion)"
+Write-Output "codex_launcher=$($launchSpec.Kind)"
 Write-Output "codex_home=$codexHome"
-Write-Output 'profile=nim-worker'
-Write-Output 'profile_format=v2-layer'
-Write-Output "profile_file_exists=$([bool](Test-Path -LiteralPath $profilePath -PathType Leaf))"
+Write-Output "config_file_exists=$([bool](Test-Path -LiteralPath $configPath -PathType Leaf))"
+Write-Output 'config_mode=isolated-default'
 Write-Output 'credential_present=True'
 Write-Output "credential_source=$credentialSource"
+Write-Output "timed_out=$([bool]$timedOut)"
 Write-Output "doctor_exit_code=$(if ($null -eq $doctorExitCode) { 'none' } else { [string]$doctorExitCode })"
 Write-Output "doctor_decode_ok=$([bool]$decodeOk)"
 Write-Output "config_status=$configStatus"

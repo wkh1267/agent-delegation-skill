@@ -32,7 +32,6 @@ if (-not $codexCommand) {
     Write-Output 'CODEX_NIM_SETUP'
     Write-Output 'codex_found=False'
     Write-Output 'config_written=False'
-    Write-Output 'profile_written=False'
     Write-Output 'credential_value_logged=False'
     exit 1
 }
@@ -45,14 +44,19 @@ if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) {
 $codexHome = Join-Path $RuntimeRoot 'codex-home'
 New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
 $configPath = Join-Path $codexHome 'config.toml'
-$profilePath = Join-Path $codexHome 'nim-worker.config.toml'
+$staleProfilePath = Join-Path $codexHome 'nim-worker.config.toml'
 
 $safeBaseUrl = ConvertTo-TomlBasicString $normalizedBaseUrl
 $safeModel = ConvertTo-TomlBasicString $Model
 
-# Codex 0.151 uses Profile V2: -p nim-worker layers
-# $CODEX_HOME/nim-worker.config.toml over the base config.toml.
+# This CODEX_HOME is dedicated to the delegated NIM Worker, so the base config
+# can select the Worker model/provider directly. Avoiding a profile removes an
+# unnecessary config layer and lets `codex exec` and `codex doctor` inspect the
+# exact same effective configuration.
 $configText = @"
+model = "$safeModel"
+model_provider = "nim"
+
 [model_providers.nim]
 name = "NVIDIA NIM"
 base_url = "$safeBaseUrl"
@@ -60,24 +64,23 @@ env_key = "NIM_API_KEY"
 wire_api = "responses"
 "@
 
-$profileText = @"
-model = "$safeModel"
-model_provider = "nim"
-"@
-
 [IO.File]::WriteAllText($configPath, $configText, (New-Object Text.UTF8Encoding($false)))
-[IO.File]::WriteAllText($profilePath, $profileText, (New-Object Text.UTF8Encoding($false)))
+$staleProfileRemoved = $false
+if (Test-Path -LiteralPath $staleProfilePath -PathType Leaf) {
+    Remove-Item -LiteralPath $staleProfilePath -Force
+    $staleProfileRemoved = $true
+}
 
 Write-Output 'CODEX_NIM_SETUP'
 Write-Output 'codex_found=True'
 Write-Output "codex_version=$([string]$codexVersion)"
 Write-Output "codex_home=$codexHome"
 Write-Output "config_path=$configPath"
-Write-Output "profile_path=$profilePath"
 Write-Output "base_url=$normalizedBaseUrl"
 Write-Output "model=$Model"
-Write-Output 'profile=nim-worker'
-Write-Output 'profile_format=v2-layer'
+Write-Output 'model_provider=nim'
+Write-Output 'config_mode=isolated-default'
+Write-Output 'profile_required=False'
+Write-Output "stale_profile_removed=$([bool]$staleProfileRemoved)"
 Write-Output 'config_written=True'
-Write-Output 'profile_written=True'
 Write-Output 'credential_value_logged=False'
