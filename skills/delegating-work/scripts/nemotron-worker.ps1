@@ -171,20 +171,54 @@ try {
     }
     if (-not $healthy) { throw 'OpenCode server did not become healthy.' }
 
-    # Before spending a Worker inference call, prove that this exact OpenCode
-    # server instance discovered both Delegent terminal tools. OpenCode 1.18.25
-    # exposes dynamically registered tool IDs through this endpoint.
-    try {
-        $toolIdsJson = & $request 'GET' '/experimental/tool/ids' $null 5
-        $toolIds = @(ConvertFrom-DelegentUniqueJson $toolIdsJson)
-        if (-not (Test-DelegentTerminalToolCatalog $toolIds)) {
-            $result = New-DelegentTerminalToolsUnavailableError
+    # First use of an explicit OpenCode config directory may install
+    # @opencode-ai/plugin before custom tools can be imported. ToolRegistry waits
+    # for that dependency, so a five-second catalog request is too aggressive on
+    # a cold runtime. Keep bootstrap bounded, retry short timed-out requests, and
+    # never spend a Worker inference call until both terminal tools are visible.
+    $bootstrapTimeoutSeconds = 60
+    if ($env:DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS) {
+        $parsedBootstrapTimeout = 0
+        if (-not [int]::TryParse($env:DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS, [ref]$parsedBootstrapTimeout) -or
+            $parsedBootstrapTimeout -lt 5 -or $parsedBootstrapTimeout -gt 300) {
+            throw 'Invalid terminal tool bootstrap timeout.'
+        }
+        $bootstrapTimeoutSeconds = $parsedBootstrapTimeout
+    }
+
+    $catalogReady = $false
+    $catalogTimedOut = $false
+    $catalogDeadline = [DateTime]::UtcNow.AddSeconds($bootstrapTimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $catalogDeadline -and -not $server.HasExited) {
+        $remainingSeconds = [int][Math]::Ceiling(($catalogDeadline - [DateTime]::UtcNow).TotalSeconds)
+        if ($remainingSeconds -lt 1) { break }
+        $attemptTimeoutSeconds = [Math]::Min(10, $remainingSeconds)
+        try {
+            $toolIdsJson = & $request 'GET' '/experimental/tool/ids' $null $attemptTimeoutSeconds
+            $toolIds = @(ConvertFrom-DelegentUniqueJson $toolIdsJson)
+            if (-not (Test-DelegentTerminalToolCatalog $toolIds)) {
+                $result = New-DelegentTerminalCatalogError -Kind terminal_tools_unavailable
+                Write-Output $result.Output
+                exit $result.ExitCode
+            }
+            $catalogReady = $true
+            break
+        }
+        catch {
+            if (Test-DelegentTimeoutError $_) {
+                $catalogTimedOut = $true
+                Start-Sleep -Milliseconds 100
+                continue
+            }
+            $result = New-DelegentTerminalCatalogError -Kind terminal_tool_catalog_error
             Write-Output $result.Output
             exit $result.ExitCode
         }
     }
-    catch {
-        $result = New-DelegentProtocolError -Kind runtime_output_error
+
+    if (-not $catalogReady) {
+        $kind = if ($catalogTimedOut) { 'terminal_tool_bootstrap_timeout' } else { 'terminal_tool_catalog_error' }
+        $result = New-DelegentTerminalCatalogError -Kind $kind
         Write-Output $result.Output
         exit $result.ExitCode
     }
