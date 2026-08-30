@@ -1,9 +1,12 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $protocolPath = Join-Path $repoRoot 'skills\delegating-work\scripts\worker-protocol.ps1'
+$terminalProtocolPath = Join-Path $repoRoot 'skills\delegating-work\scripts\worker-terminal-protocol.ps1'
 $wrapperPath = Join-Path $repoRoot 'skills\delegating-work\scripts\nemotron-worker.ps1'
-$credentialPath = Join-Path $repoRoot 'skills\delegating-work\.env'
+$skillRoot = Join-Path $repoRoot 'skills\delegating-work'
+$credentialPath = Join-Path $skillRoot '.env'
 . $protocolPath
+. $terminalProtocolPath
 
 function Assert-True {
     param([bool]$Condition)
@@ -23,10 +26,46 @@ function New-NormalResult {
     }
 }
 
+function New-DecisionResult {
+    [ordered]@{
+        question = 'Choose?'
+        evidence = 'facts'
+        options = 'A or B'
+        recommendation = 'A'
+        confidence = 'high'
+    }
+}
+
+function New-TerminalPart {
+    param(
+        [string]$Tool,
+        [object]$Input,
+        [string]$Status = 'completed'
+    )
+    @{
+        type = 'tool'
+        tool = $Tool
+        callID = 'call_test'
+        state = @{
+            status = $Status
+            input = $Input
+            output = 'recorded'
+            title = 'terminal'
+            metadata = @{}
+            time = @{ start = 1; end = 2 }
+        }
+    }
+}
+
 function New-ResponseJson {
-    param([object]$StructuredOutput, [object[]]$Parts = @())
-    @{ info = @{ id = 'msg_new'; role = 'assistant'; structured = $StructuredOutput }; parts = $Parts } |
-        ConvertTo-Json -Depth 12 -Compress
+    param(
+        [object[]]$Parts = @(),
+        [string]$Id = 'msg_new',
+        [object]$Error = $null
+    )
+    $info = @{ id = $Id; role = 'assistant' }
+    if ($null -ne $Error) { $info.error = $Error }
+    @{ info = $info; parts = $Parts } | ConvertTo-Json -Depth 16 -Compress
 }
 
 function New-FakeRequest {
@@ -47,57 +86,114 @@ function New-FakeRequest {
     }.GetNewClosure()
 }
 
+function New-Invocation {
+    param([string]$Session = 'ses_test', [string]$Agent = 'plan')
+    [pscustomobject]@{ Session = $Session; Title = $null; Agent = $Agent; Dir = $null; Prompt = 'task' }
+}
+
 $tests = [ordered]@{}
 
-$tests['valid eight-field handoff'] = {
-    $request = New-FakeRequest @{ 'GET /session/ses_valid/message' = @('[]'); 'POST /session/ses_valid/message' = @(New-ResponseJson (New-NormalResult)) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_valid'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+$tests['valid terminal handoff'] = {
+    $parts = @(New-TerminalPart 'delegent_handoff' (New-NormalResult))
+    $request = New-FakeRequest @{
+        'GET /session/ses_valid/message' = @('[]')
+        'POST /session/ses_valid/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_valid') $request
     Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'WORKER_PROTOCOL_ERROR')
 }
 
-$tests['valid hard escalation'] = {
-    $decision = [ordered]@{ kind = 'decision_needed'; question = 'Choose?'; evidence = 'facts'; options = 'A or B'; recommendation = 'A'; confidence = 'high' }
-    $request = New-FakeRequest @{ 'GET /session/ses_decision/message' = @('[]'); 'POST /session/ses_decision/message' = @(New-ResponseJson $decision) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_decision'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+$tests['valid terminal decision'] = {
+    $parts = @(New-TerminalPart 'delegent_decision' (New-DecisionResult))
+    $request = New-FakeRequest @{
+        'GET /session/ses_decision/message' = @('[]')
+        'POST /session/ses_decision/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_decision') $request
     Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^DECISION_NEEDED' -and $result.Output -match 'Recommendation:')
 }
 
-$tests['trajectory excluded'] = {
-    $parts = @(@{ type = 'tool'; state = @{ output = 'trajectory-progress-marker' } }, @{ type = 'text'; text = 'human terminal noise' })
-    $request = New-FakeRequest @{ 'GET /session/ses_trajectory/message' = @('[]'); 'POST /session/ses_trajectory/message' = @(New-ResponseJson (New-NormalResult) $parts) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_trajectory'; Title = $null; Agent = 'build'; Dir = $null; Prompt = 'task' }) $request
+$tests['ordinary trajectory excluded'] = {
+    $parts = @(
+        @{ type = 'tool'; tool = 'read'; state = @{ status = 'completed'; input = @{ path = 'README.md' }; output = 'trajectory-progress-marker' } },
+        @{ type = 'text'; text = 'human terminal noise' },
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult))
+    )
+    $request = New-FakeRequest @{
+        'GET /session/ses_trajectory/message' = @('[]')
+        'POST /session/ses_trajectory/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_trajectory' 'build') $request
     Assert-True ($result.ExitCode -eq 0 -and $result.Output -notmatch 'trajectory-progress-marker|human terminal noise')
 }
 
-$tests['missing terminal result'] = {
+$tests['missing terminal tool'] = {
     $request = New-FakeRequest @{
         'POST /session' = @('{"id":"ses_missing"}')
-        'POST /session/ses_missing/message' = @('{"info":{"id":"msg_new","role":"assistant"},"parts":[]}')
+        'POST /session/ses_missing/message' = @(New-ResponseJson @(@{ type = 'text'; text = 'plain prose only' }))
         'GET /session/ses_missing/message' = @('[]')
     }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = $null; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
-    Assert-True ($result.Output -match 'kind: missing_terminal_handoff')
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation $null) $request
+    Assert-True ($result.Output -match 'kind: missing_terminal_handoff' -and $result.Output -notmatch 'plain prose only')
 }
 
-$tests['malformed field'] = {
-    $malformed = New-NormalResult
-    $malformed.Remove('risks')
-    $request = New-FakeRequest @{ 'GET /session/ses_malformed/message' = @('[]'); 'POST /session/ses_malformed/message' = @(New-ResponseJson $malformed) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_malformed'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+$tests['malformed missing argument'] = {
+    $value = New-NormalResult
+    $value.Remove('risks')
+    $parts = @(New-TerminalPart 'delegent_handoff' $value)
+    $request = New-FakeRequest @{
+        'GET /session/ses_missing_field/message' = @('[]')
+        'POST /session/ses_missing_field/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_missing_field') $request
     Assert-True ($result.Output -match 'kind: malformed_handoff')
 }
 
-$tests['duplicate field'] = {
-    $duplicate = '{"info":{"id":"msg_new","role":"assistant","structured_output":{"status":"completed","status":"blocked","summary":"done","evidence":"facts","changes":"none","tests":"passed","risks":"none","decisions_needed":"none","review_targets":"adapter"}},"parts":[]}'
-    $request = New-FakeRequest @{ 'GET /session/ses_duplicate/message' = @('[]'); 'POST /session/ses_duplicate/message' = @($duplicate) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_duplicate'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+$tests['malformed extra argument'] = {
+    $value = New-NormalResult
+    $value.extra = 'not allowed'
+    $parts = @(New-TerminalPart 'delegent_handoff' $value)
+    $request = New-FakeRequest @{
+        'GET /session/ses_extra/message' = @('[]')
+        'POST /session/ses_extra/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_extra') $request
+    Assert-True ($result.Output -match 'kind: malformed_handoff')
+}
+
+$tests['duplicate terminal handoff rejected'] = {
+    $parts = @(
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult)),
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult))
+    )
+    $request = New-FakeRequest @{
+        'GET /session/ses_duplicate/message' = @('[]')
+        'POST /session/ses_duplicate/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_duplicate') $request
+    Assert-True ($result.Output -match 'kind: malformed_handoff')
+}
+
+$tests['handoff and decision together rejected'] = {
+    $parts = @(
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult)),
+        (New-TerminalPart 'delegent_decision' (New-DecisionResult))
+    )
+    $request = New-FakeRequest @{
+        'GET /session/ses_both/message' = @('[]')
+        'POST /session/ses_both/message' = @(New-ResponseJson $parts)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_both') $request
     Assert-True ($result.Output -match 'kind: malformed_handoff')
 }
 
 $tests['runtime API failure'] = {
     $failure = { throw [InvalidOperationException]::new('untrusted runtime detail') }
-    $request = New-FakeRequest @{ 'GET /session/ses_failure/message' = @('[]'); 'POST /session/ses_failure/message' = @($failure) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_failure'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+    $request = New-FakeRequest @{
+        'GET /session/ses_failure/message' = @('[]')
+        'POST /session/ses_failure/message' = @($failure)
+    }
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_failure') $request
     Assert-True ($result.Output -match 'kind: runtime_output_error' -and $result.Output -notmatch 'untrusted runtime detail')
 }
 
@@ -109,53 +205,98 @@ $tests['bounded timeout'] = {
         'POST /session/ses_timeout/abort' = @('{}')
     }
     $watch = [Diagnostics.Stopwatch]::StartNew()
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_timeout'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request -PromptTimeoutSeconds 1
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_timeout') $request -PromptTimeoutSeconds 1
     $watch.Stop()
     Assert-True ($result.Output -match 'kind: timeout' -and $watch.Elapsed.TotalSeconds -lt 1)
 }
 
-$tests['CLI stdout missing; persisted session recovery'] = {
-    $persisted = @(@{ info = @{ id = 'msg_new'; role = 'assistant'; structured_output = New-NormalResult }; parts = @(@{ type = 'tool'; state = @{ output = 'hidden trajectory' } }) }) | ConvertTo-Json -Depth 12 -Compress
+$tests['persisted session recovery'] = {
+    $persistedParts = @(
+        @{ type = 'tool'; tool = 'read'; state = @{ status = 'completed'; input = @{ path = 'README.md' }; output = 'hidden trajectory' } },
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult))
+    )
+    $persisted = @(@{ info = @{ id = 'msg_new'; role = 'assistant' }; parts = $persistedParts }) | ConvertTo-Json -Depth 16 -Compress
     $request = New-FakeRequest @{
         'POST /session' = @('{"id":"ses_recovery"}')
         'POST /session/ses_recovery/message' = @('')
         'GET /session/ses_recovery/message' = @($persisted)
     }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = $null; Title = 'delegent:test:scope:plan'; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation $null) $request
     Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'hidden trajectory')
 }
 
-$tests['stale ID-less session result rejected'] = {
-    $old = @(@{ info = @{ role = 'assistant'; structured = New-NormalResult }; parts = @() }) | ConvertTo-Json -Depth 12 -Compress
+$tests['stale terminal result rejected on reuse'] = {
+    $old = @(@{ info = @{ id = 'msg_old'; role = 'assistant' }; parts = @((New-TerminalPart 'delegent_handoff' (New-NormalResult))) }) | ConvertTo-Json -Depth 16 -Compress
     $request = New-FakeRequest @{
-        'GET /session/ses_stale/message' = @($old)
+        'GET /session/ses_stale/message' = @($old, $old)
         'POST /session/ses_stale/message' = @('')
     }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_stale'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request
-    Assert-True ($result.Output -match 'kind: missing_terminal_handoff' -and $result.Output -notmatch 'done')
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_stale') $request
+    Assert-True ($result.Output -match 'kind: missing_terminal_handoff' -and $result.Output -notmatch '^STATUS: completed')
 }
 
-$tests['fake credential excluded'] = {
+$tests['sensitive content excluded'] = {
     $fakeCredential = 'nvapi-' + [Guid]::NewGuid().ToString('N')
-    $parts = @(@{ type = 'tool'; state = @{ output = $fakeCredential } })
-    $request = New-FakeRequest @{ 'GET /session/ses_secret/message' = @('[]'); 'POST /session/ses_secret/message' = @(New-ResponseJson (New-NormalResult) $parts) }
-    $result = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_secret'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $request -SensitiveValues @($fakeCredential)
+    $safeParts = @(
+        @{ type = 'tool'; tool = 'read'; state = @{ status = 'completed'; input = @{}; output = $fakeCredential } },
+        (New-TerminalPart 'delegent_handoff' (New-NormalResult))
+    )
+    $safeRequest = New-FakeRequest @{
+        'GET /session/ses_secret/message' = @('[]')
+        'POST /session/ses_secret/message' = @(New-ResponseJson $safeParts)
+    }
+    $safe = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_secret') $safeRequest -SensitiveValues @($fakeCredential)
 
     $leaking = New-NormalResult
     $leaking.summary = $fakeCredential
-    $leakRequest = New-FakeRequest @{ 'GET /session/ses_leak/message' = @('[]'); 'POST /session/ses_leak/message' = @(New-ResponseJson $leaking) }
-    $leakResult = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_leak'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $leakRequest -SensitiveValues @($fakeCredential)
+    $leakRequest = New-FakeRequest @{
+        'GET /session/ses_leak/message' = @('[]')
+        'POST /session/ses_leak/message' = @(New-ResponseJson @((New-TerminalPart 'delegent_handoff' $leaking)))
+    }
+    $leak = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_leak') $leakRequest -SensitiveValues @($fakeCredential)
 
     $residue = @(
         Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Force |
             Where-Object { $_.FullName -notmatch '\\.git\\' -and $_.FullName -ne $credentialPath } |
             Select-String -SimpleMatch $fakeCredential -List -ErrorAction SilentlyContinue
     )
-    Assert-True ($result.Output -notmatch [regex]::Escape($fakeCredential) -and $leakResult.Output -match 'kind: runtime_output_error' -and $leakResult.Output -notmatch [regex]::Escape($fakeCredential) -and $residue.Count -eq 0)
+    Assert-True ($safe.ExitCode -eq 0 -and $safe.Output -notmatch [regex]::Escape($fakeCredential) -and $leak.Output -match 'kind: runtime_output_error' -and $leak.Output -notmatch [regex]::Escape($fakeCredential) -and $residue.Count -eq 0)
+}
+
+$tests['message body has no format or agent'] = {
+    $capture = @{ Body = $null }
+    $request = {
+        param($Method, $Path, $BodyJson, $TimeoutSeconds)
+        if ($Method -eq 'GET') { return '[]' }
+        $capture.Body = ConvertFrom-Json $BodyJson
+        return New-ResponseJson @((New-TerminalPart 'delegent_handoff' (New-NormalResult)))
+    }.GetNewClosure()
+    $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_body' 'build') $request
+    Assert-True ($result.ExitCode -eq 0 -and $null -eq $capture.Body.PSObject.Properties['format'] -and $null -eq $capture.Body.PSObject.Properties['agent'] -and $capture.Body.model.providerID -eq 'nvidia')
+}
+
+$tests['terminal tool installation'] = {
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('delegent-tools-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $target = Install-DelegentTerminalTools $skillRoot $tempRoot
+        $handoff = Join-Path $target 'delegent_handoff.ts'
+        $decision = Join-Path $target 'delegent_decision.ts'
+        Assert-True ((Test-Path $handoff) -and (Test-Path $decision))
+        $combined = (Get-Content -Raw $handoff) + (Get-Content -Raw $decision)
+        Assert-True ($combined -notmatch 'nvapi-|api_key|Get-Content|Invoke-RestMethod|Invoke-WebRequest')
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$tests['session title agent dir parsing'] = {
+    $invocation = Get-DelegentWorkerInvocation @('--session', 'ses_keep', '--title=delegent:test:scope:plan', '--agent', 'plan', '--dir', 'C:\fake-repo', '--', 'inspect', '--literal')
+    Assert-True ($invocation.Session -eq 'ses_keep' -and $invocation.Title -eq 'delegent:test:scope:plan' -and $invocation.Agent -eq 'plan' -and $invocation.Dir -eq 'C:\fake-repo' -and $invocation.Prompt -eq 'inspect --literal')
 }
 
 $tests['sessions compatibility'] = {
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('delegent-phase-a-' + [Guid]::NewGuid().ToString('N'))
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('delegent-sessions-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempRoot -ErrorAction Stop | Out-Null
     $oldPath = $env:PATH
     $oldCredential = $env:DELEGENT_API_KEY
@@ -175,12 +316,7 @@ $tests['sessions compatibility'] = {
         $env:PATH = $oldPath
         $env:DELEGENT_API_KEY = $oldCredential
         $env:DELEGENT_RUNTIME = $oldRuntime
-        if (Test-Path -LiteralPath $tempRoot) {
-            $resolvedTemp = (Resolve-Path -LiteralPath $tempRoot).Path
-            if ($resolvedTemp.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
-            }
-        }
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -222,35 +358,8 @@ $tests['native server ownership and cleanup'] = {
         if ($childId -and (Get-Process -Id $childId -ErrorAction SilentlyContinue)) { Stop-Process -Id $childId -Force -ErrorAction SilentlyContinue }
         if (-not $server.HasExited) { $server.Kill() }
         $server.Dispose()
-        if (Test-Path -LiteralPath $tempRoot) {
-            $resolvedTemp = (Resolve-Path -LiteralPath $tempRoot).Path
-            if ($resolvedTemp.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
-            }
-        }
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-}
-
-$tests['session title agent dir forwarding'] = {
-    $invocation = Get-DelegentWorkerInvocation @('--session', 'ses_keep', '--title=delegent:test:scope:plan', '--agent', 'plan', '--dir', 'C:\fake-repo', '--', 'inspect', '--literal')
-    Assert-True ($invocation.Session -eq 'ses_keep' -and $invocation.Title -eq 'delegent:test:scope:plan' -and $invocation.Agent -eq 'plan' -and $invocation.Dir -eq 'C:\fake-repo' -and $invocation.Prompt -eq 'inspect --literal')
-
-    $capture = @{ Body = $null }
-    $request = {
-        param($Method, $Path, $BodyJson, $TimeoutSeconds)
-        if ($Method -eq 'POST' -and $Path -eq '/session') {
-            Assert-True ((ConvertFrom-Json $BodyJson).title -eq 'delegent:test:scope:build')
-            return '{"id":"ses_created"}'
-        }
-        if ($Method -eq 'POST' -and $Path -eq '/session/ses_created/message') {
-            $capture.Body = ConvertFrom-Json $BodyJson
-            return New-ResponseJson (New-NormalResult)
-        }
-        throw 'Unexpected fake request.'
-    }.GetNewClosure()
-    $createdInvocation = Get-DelegentWorkerInvocation @('--title', 'delegent:test:scope:build', '--agent', 'build', '--dir', 'C:\fake-repo', 'task')
-    $result = Invoke-DelegentWorkerProtocol $createdInvocation $request
-    Assert-True ($result.ExitCode -eq 0 -and $capture.Body.agent -eq 'build' -and $capture.Body.parts[0].text -eq 'task')
 }
 
 $passed = 0
@@ -261,7 +370,7 @@ foreach ($test in $tests.GetEnumerator()) {
         $passed++
     }
     catch {
-        Write-Output "FAIL $($test.Key)"
+        Write-Output "FAIL $($test.Key): $($_.Exception.Message)"
     }
 }
 
