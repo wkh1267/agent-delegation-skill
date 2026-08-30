@@ -25,6 +25,12 @@ Assert-True ($setup -match 'env_key = "NIM_API_KEY"') 'Setup must use an environ
 Assert-True ($setup -match 'wire_api = "responses"') 'Setup must use the Responses wire API.'
 Assert-True ($setup -match '\[profiles\.nim-worker\]') 'Setup must define the nim-worker profile.'
 Assert-True ($setup -match 'codex-home') 'Setup must create an isolated CODEX_HOME directory.'
+Assert-True ($setup -match 'web_search = "disabled"') 'NIM Worker setup must disable web search for the minimal compatibility surface.'
+Assert-True ($setup -match '\[agents\][\s\S]*enabled = false') 'NIM Worker setup must disable Codex multi-agent orchestration.'
+Assert-True ($setup -match '\[features\][\s\S]*multi_agent_v2 = false') 'NIM Worker setup must disable multi-agent v2.'
+Assert-True ($setup -match '\[skills\.bundled\][\s\S]*enabled = false') 'NIM Worker setup must disable bundled skills for the initial harness probe.'
+Assert-True ($setup -match '\[orchestrator\.skills\][\s\S]*enabled = false') 'NIM Worker setup must disable orchestrator skills.'
+Assert-True ($setup -match '\[orchestrator\.mcp\][\s\S]*enabled = false') 'NIM Worker setup must disable orchestrator MCP for the initial harness probe.'
 Assert-True ($setup -notmatch '\$HOME\\\.codex|~\/\.codex') 'Setup must not mutate the normal user Codex home.'
 Assert-True ($setup -notmatch 'nvapi-[A-Za-z0-9_-]+') 'Setup must not contain a NVIDIA credential literal.'
 
