@@ -19,8 +19,9 @@ $old = @{
     OPENCODE_SERVER_PASSWORD = $env:OPENCODE_SERVER_PASSWORD
 }
 
-# Reuse only Delegent's production config cache so OpenCode does not turn this
-# zero-inference diagnostic into a fresh @opencode-ai/plugin bootstrap test.
+# Reuse Delegent's production config and cache roots. The previous diagnostic
+# already proved registration succeeds with production config + temporary cache;
+# this run isolates whether the durable OpenCode cache is the remaining delta.
 # Session/data/state remain isolated under a temporary diagnostic root.
 $sharedRuntime = $null
 if ($env:DELEGENT_RUNTIME) {
@@ -33,6 +34,7 @@ else {
     $sharedRuntime = Join-Path ([IO.Path]::GetTempPath()) 'agent-delegation-skills\opencode'
 }
 $sharedConfigHome = Join-Path $sharedRuntime 'config'
+$sharedCacheHome = Join-Path $sharedRuntime 'cache'
 $runtime = Join-Path ([IO.Path]::GetTempPath()) ('delegent-terminal-diagnostic-' + [Guid]::NewGuid().ToString('N'))
 $server = $null
 $serverJob = [IntPtr]::Zero
@@ -65,13 +67,14 @@ function Invoke-DiagnosticGet {
 try {
     New-Item -ItemType Directory -Force -Path $runtime | Out-Null
     New-Item -ItemType Directory -Force -Path $sharedConfigHome | Out-Null
+    New-Item -ItemType Directory -Force -Path $sharedCacheHome | Out-Null
 
     # Use a non-secret placeholder only so {env:api_key} config substitution is deterministic.
     # This diagnostic never creates a session or sends a model request.
     $env:api_key = 'delegent-diagnostic-placeholder'
     $env:XDG_CONFIG_HOME = $sharedConfigHome
     $env:XDG_DATA_HOME = Join-Path $runtime 'data'
-    $env:XDG_CACHE_HOME = Join-Path $runtime 'cache'
+    $env:XDG_CACHE_HOME = $sharedCacheHome
     $env:XDG_STATE_HOME = Join-Path $runtime 'state'
     $env:OPENCODE_CONFIG = $null
     $env:OPENCODE_CONFIG_DIR = $null
@@ -195,6 +198,7 @@ try {
     Write-Output "inherited_opencode_pure=$pureInheritedText"
     Write-Output 'diagnostic_opencode_pure=false'
     Write-Output 'shared_production_config_cache=true'
+    Write-Output 'shared_production_runtime_cache=true'
     Write-Output "plugin_file_exists=$([bool](Test-Path -LiteralPath $terminalPluginPath -PathType Leaf))"
     Write-Output "injected_plugin_configured=$([bool]$injectedPluginConfigured)"
     Write-Output "effective_config_request=$($configRequest.Status)"
