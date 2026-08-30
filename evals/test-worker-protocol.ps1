@@ -42,7 +42,7 @@ function New-DecisionResult {
 function New-TerminalPart {
     param(
         [string]$Tool,
-        [object]$Input,
+        [object]$ToolInput,
         [string]$Status = 'completed'
     )
     @{
@@ -51,7 +51,7 @@ function New-TerminalPart {
         callID = 'call_test'
         state = @{
             status = $Status
-            input = $Input
+            input = $ToolInput
             output = 'recorded'
             title = 'terminal'
             metadata = @{}
@@ -64,10 +64,10 @@ function New-ResponseJson {
     param(
         [object[]]$Parts = @(),
         [string]$Id = 'msg_new',
-        [object]$Error = $null
+        [object]$ResponseError = $null
     )
     $info = @{ id = $Id; role = 'assistant' }
-    if ($null -ne $Error) { $info.error = $Error }
+    if ($null -ne $ResponseError) { $info.error = $ResponseError }
     @{ info = $info; parts = $Parts } | ConvertTo-Json -Depth 16 -Compress
 }
 
