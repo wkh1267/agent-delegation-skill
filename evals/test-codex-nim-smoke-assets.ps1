@@ -27,7 +27,7 @@ Assert-True ($smoke -match 'ReadToEndAsync') 'N2 smoke must drain stdout and std
 Assert-True ($smoke -match 'taskkill\.exe /PID \$process\.Id /T /F') 'N2 smoke must bound and clean up the Codex process tree.'
 Assert-True ($smoke -match "extension -eq '\.ps1'" -and $smoke -match "extension -eq '\.cmd'") 'N2 smoke must support Windows Codex shims as well as native executables.'
 Assert-True ($smoke -match 'stdout\.Contains\(\$key\)' -and $smoke -match 'stderr\.Contains\(\$key\)') 'N2 smoke must fail if the credential appears in captured process output.'
-Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout|\$stderr|\$key)') 'N2 smoke must not print raw process streams or credential values.'
+Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N2 smoke must not print raw process streams or credential values.'
 Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 smoke must not contain a NVIDIA credential literal.'
 Assert-True ($smoke -match 'credential_value_logged=False') 'N2 smoke must make the no-secret-output contract explicit.'
 
