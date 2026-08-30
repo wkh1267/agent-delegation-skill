@@ -27,7 +27,8 @@ A.7 OpenCode live terminal handoff                      PAUSED / runtime-specifi
 
 N0  Codex/NIM baseline + isolated CODEX_HOME            PASS
 N1  Hosted NIM Responses compatibility                  PASS
-N2  Minimal `codex exec` Nemotron Worker                IN PROGRESS
+N2a Codex config/auth/provider doctor                    PASS
+N2b Minimal `codex exec` Nemotron Worker                NEXT
 N3  Real Codex repository tool use
 N4  Deterministic terminal handoff via --output-schema
 N5  Codex Worker session resume / continuity
@@ -165,15 +166,44 @@ Earlier experiments generated `nim-worker.config.toml`; current setup removes th
 
 The secret-safe live probe is implemented in `evals/probe-nim-responses.ps1`.
 
-### N2 — minimal `codex exec` — IN PROGRESS
+### N2a — zero-inference Codex doctor — PASS
+
+The dedicated isolated Worker config was validated with `evals/diagnose-codex-nim-doctor.ps1` on the actual local Codex installation.
+
+Live evidence on Codex CLI 0.151.0:
+
+```text
+config_file_exists=True
+config_mode=isolated-default
+doctor_exit_code=0
+doctor_decode_ok=True
+config_status=ok
+config_loaded=True
+active_model=nvidia/nemotron-3-super-120b-a12b
+active_provider=nim
+provider_selected=True
+model_selected=True
+auth_status=ok
+provider_env_present=True
+reachability_status=ok
+stderr_present=False
+credential_leak_detected=False
+overall=PASS
+model_inference_used=false
+credential_value_logged=False
+```
+
+This proves the remaining N2 uncertainty is **not** base config loading, model selection, provider selection, provider credential discovery, or provider reachability.
+
+If `codex exec` still exits before `thread.started`, the remaining fault surface is the exec-only bootstrap path such as execpolicy/login restriction handling, local state/environment initialization, or in-process app-server/thread startup.
+
+### N2b — minimal `codex exec` — NEXT
 
 Use `evals/run-codex-nim-smoke.ps1`.
 
-The first two live N2 attempts exited before `thread.started` with exit code 1 and no JSONL output. This proves those failures occurred in Codex startup/config/bootstrap before a model turn; they do not invalidate the N1 hosted Responses result.
+The first two live N2 attempts exited before `thread.started` with exit code 1 and no JSONL output. Those attempts predated the dedicated-base-config simplification and therefore should not be treated as evidence against the current N2 design.
 
-A diagnostic attempt then exposed an incorrect assumption in our test tooling: Codex 0.151.0 rejects `--profile` for `codex doctor`. Rather than maintain separate doctor and exec config paths, N2 was simplified so both commands read the same dedicated base `config.toml` with no profile.
-
-Exact Codex 0.151.0 source also confirms the N2 exec flags used by the smoke are valid: `--strict-config`, `--ephemeral`, `--json`, `--sandbox`, and `--ignore-rules` are all supported.
+Exact Codex 0.151.0 source confirms the N2 exec flags used by the smoke are valid: `--strict-config`, `--ephemeral`, `--json`, `--sandbox`, and `--ignore-rules` are all supported.
 
 The current smoke runs the equivalent of:
 
@@ -205,12 +235,6 @@ no credential leakage
 ```
 
 The smoke handles native Codex executables and Windows npm PowerShell/CMD shims and bounds the process tree on timeout.
-
-### N2 zero-inference doctor diagnostic
-
-`evals/diagnose-codex-nim-doctor.ps1` uses the same isolated base config and runs `codex doctor --json` without a profile. It uses `ProcessStartInfo` rather than invoking the PowerShell shim directly, so native stderr is captured and sanitized instead of surfacing as a PowerShell `NativeCommandError`.
-
-The diagnostic is intended to report only safe derived fields such as config load, active model/provider, credential-env presence, reachability status, and whether raw output contained the credential. It does not run an agent turn.
 
 ### N3 — repository tools
 
@@ -319,13 +343,7 @@ Before any real Worker call:
 
 Do not run another OpenCode A.7.
 
-Sync the latest branch, then run the zero-inference Codex doctor diagnostic first:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\diagnose-codex-nim-doctor.ps1
-```
-
-If the dedicated Worker config/provider/auth checks are healthy, rerun N2:
+The zero-inference Codex doctor gate has passed. Run N2b now:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\run-codex-nim-smoke.ps1
