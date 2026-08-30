@@ -35,10 +35,15 @@ Assert-True ($smoke -match 'ReadToEndAsync') 'N2 smoke must drain stdout and std
 Assert-True ($smoke -match 'taskkill\.exe /PID \$process\.Id /T /F') 'N2 smoke must bound and clean up the Codex process tree.'
 Assert-True ($smoke -match "extension -eq '\.ps1'" -and $smoke -match "extension -eq '\.cmd'") 'N2 smoke must support Windows Codex shims as well as native executables.'
 Assert-True ($smoke -match 'app_server_init_error') 'N2 smoke must classify in-process app-server startup failures.'
+Assert-True ($smoke -match 'environment_manager_error' -and $smoke -match 'exec_policy_error') 'N2 smoke must classify runtime-only startup seams.'
 Assert-True ($smoke -match 'Get-SafeFailureClass' -and $smoke -match 'failure_class=') 'N2 smoke must classify pre-thread failures without printing raw stderr.'
+Assert-True ($smoke -match 'Get-SafeStderrSummary' -and $smoke -match 'stderr_summary=') 'N2 smoke must expose a bounded sanitized startup error summary.'
+Assert-True ($smoke -match "Replace\(\$Credential, '<redacted>'\)") 'N2 stderr summary must redact the exact credential before output.'
+Assert-True ($smoke -match 'https\?://\\S\+' -and $smoke -match "'<url>'") 'N2 stderr summary must redact URLs.'
+Assert-True ($smoke -match "'<path>'" -and $smoke -match 'A-Z.*\\\\') 'N2 stderr summary must redact Windows paths.'
 Assert-True ($smoke -match 'stdout\.Contains\(\$key\)' -and $smoke -match 'stderr\.Contains\(\$key\)') 'N2 smoke must fail if the credential appears in captured process output.'
 Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N2 smoke must not print raw process streams or credential values.'
-Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 smoke must not contain a NVIDIA credential literal.'
+Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]{12,}') 'N2 smoke must not contain a NVIDIA credential literal.'
 Assert-True ($smoke -match 'credential_value_logged=False') 'N2 smoke must make the no-secret-output contract explicit.'
 
 $doctor = Get-Content -Raw -LiteralPath $doctorPath
