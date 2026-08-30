@@ -54,6 +54,43 @@ if ($script:CapturedPostBody) {
     Write-Output ("body_has_format={0}; body_has_agent={1}" -f ($null -ne $captured.PSObject.Properties['format']), ($null -ne $captured.PSObject.Properties['agent']))
 }
 
+Write-Output 'DEBUG queued route harness'
+$script:DebugRoutes = @{}
+foreach ($entry in @{
+    'GET /session/ses_queue/message' = @('[]')
+    'POST /session/ses_queue/message' = @($script:ExpectedJson)
+}.GetEnumerator()) {
+    $q = New-Object Collections.Queue
+    foreach ($item in @($entry.Value)) { $q.Enqueue($item) }
+    $script:DebugRoutes[$entry.Key] = $q
+}
+$queuedRequest = {
+    param($Method, $Path, $BodyJson, $TimeoutSeconds)
+    $key = "$Method $Path"
+    $item = $script:DebugRoutes[$key].Dequeue()
+    return [string]$item
+}
+$directGet = & $queuedRequest 'GET' '/session/ses_queue/message' $null 5
+$directPost = & $queuedRequest 'POST' '/session/ses_queue/message' '{}' 5
+Write-Output ("queued_get={0}; queued_equal={1}; queued_type={2}; queued_len={3}" -f $directGet, ($directPost -ceq $script:ExpectedJson), $directPost.GetType().FullName, $directPost.Length)
+$queuedMessage = ConvertFrom-DelegentUniqueJson $directPost
+$queuedTerminal = Get-DelegentTerminalResult $queuedMessage
+Write-Output ("queued_terminal_status={0}" -f $queuedTerminal.status)
+
+# Rebuild queues, then exercise the real protocol through the same harness.
+$script:DebugRoutes = @{}
+foreach ($entry in @{
+    'GET /session/ses_queue/message' = @('[]')
+    'POST /session/ses_queue/message' = @($script:ExpectedJson)
+}.GetEnumerator()) {
+    $q = New-Object Collections.Queue
+    foreach ($item in @($entry.Value)) { $q.Enqueue($item) }
+    $script:DebugRoutes[$entry.Key] = $q
+}
+$queuedResult = Invoke-DelegentWorkerProtocol ([pscustomobject]@{ Session = 'ses_queue'; Title = $null; Agent = 'plan'; Dir = $null; Prompt = 'task' }) $queuedRequest
+Write-Output ("queued_invoke_exit={0}" -f $queuedResult.ExitCode)
+Write-Output $queuedResult.Output
+
 Write-Output 'DEBUG command identity'
 $definition = (Get-Command Invoke-DelegentWorkerProtocol).Definition
 Write-Output ("has_terminal_call={0}" -f ($definition -match 'Get-DelegentTerminalResult'))
