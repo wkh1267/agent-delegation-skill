@@ -32,6 +32,7 @@ if (-not $codexCommand) {
     Write-Output 'CODEX_NIM_SETUP'
     Write-Output 'codex_found=False'
     Write-Output 'config_written=False'
+    Write-Output 'profile_written=False'
     Write-Output 'credential_value_logged=False'
     exit 1
 }
@@ -44,50 +45,39 @@ if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) {
 $codexHome = Join-Path $RuntimeRoot 'codex-home'
 New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
 $configPath = Join-Path $codexHome 'config.toml'
+$profilePath = Join-Path $codexHome 'nim-worker.config.toml'
 
 $safeBaseUrl = ConvertTo-TomlBasicString $normalizedBaseUrl
 $safeModel = ConvertTo-TomlBasicString $Model
+
+# Codex 0.151 uses Profile V2: -p nim-worker layers
+# $CODEX_HOME/nim-worker.config.toml over the base config.toml.
 $configText = @"
-# Keep the V0.1 NIM Worker surface intentionally small. The main Codex Lead owns
-# orchestration; this worker only needs the standard function-tool harness.
-web_search = "disabled"
-
-[agents]
-enabled = false
-
-[features]
-multi_agent_v2 = false
-
-[skills.bundled]
-enabled = false
-
-[orchestrator.skills]
-enabled = false
-
-[orchestrator.mcp]
-enabled = false
-
 [model_providers.nim]
 name = "NVIDIA NIM"
 base_url = "$safeBaseUrl"
 env_key = "NIM_API_KEY"
 wire_api = "responses"
+"@
 
-[profiles.nim-worker]
+$profileText = @"
 model = "$safeModel"
 model_provider = "nim"
 "@
 
 [IO.File]::WriteAllText($configPath, $configText, (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($profilePath, $profileText, (New-Object Text.UTF8Encoding($false)))
 
 Write-Output 'CODEX_NIM_SETUP'
 Write-Output 'codex_found=True'
 Write-Output "codex_version=$([string]$codexVersion)"
 Write-Output "codex_home=$codexHome"
 Write-Output "config_path=$configPath"
+Write-Output "profile_path=$profilePath"
 Write-Output "base_url=$normalizedBaseUrl"
 Write-Output "model=$Model"
 Write-Output 'profile=nim-worker'
-Write-Output 'optional_tool_surface=minimal'
+Write-Output 'profile_format=v2-layer'
 Write-Output 'config_written=True'
+Write-Output 'profile_written=True'
 Write-Output 'credential_value_logged=False'
