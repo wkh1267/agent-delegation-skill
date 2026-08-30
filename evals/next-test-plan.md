@@ -15,7 +15,7 @@ The core Lead/Worker architecture, Context Firewall, Worker continuity policy, h
 
 OpenCode is no longer assumed to be the required Worker runtime. It is retained as a frozen baseline/fallback while Codex harness + NVIDIA NIM is evaluated.
 
-Do **not** continue adding OpenCode-specific lifecycle/plugin workarounds as the next activity. The next experiment is the isolated Codex+NIM compatibility spike.
+Do **not** continue adding OpenCode-specific lifecycle/plugin workarounds as the next activity.
 
 ## Current validation order
 
@@ -25,9 +25,9 @@ A.5 OpenCode/NIM compatibility isolation                PASS / blocker isolated
 A.6 Terminal protocol fake/local validation             PASS
 A.7 OpenCode live terminal handoff                      PAUSED / runtime-specific blocker
 
-N0  Codex/NIM baseline + isolated CODEX_HOME            NEXT
-N1  Hosted NIM Responses compatibility
-N2  Minimal `codex exec` Nemotron Worker
+N0  Codex/NIM baseline + isolated CODEX_HOME            PASS
+N1  Hosted NIM Responses compatibility                  PASS
+N2  Minimal `codex exec` Nemotron Worker                NEXT
 N3  Real Codex repository tool use
 N4  Deterministic terminal handoff via --output-schema
 N5  Codex Worker session resume / continuity
@@ -84,41 +84,112 @@ codex exec -p nim-worker
 NVIDIA NIM / Nemotron
 ```
 
-This reuses Codex's existing:
-
-- headless `exec` mode;
-- repository tools;
-- sandboxing;
-- JSONL event stream;
-- final output schema support;
-- persisted sessions and `resume`;
-- process/tool orchestration.
-
-It therefore has the potential to reduce the amount of runtime-specific code Delegent must own.
+This reuses Codex's existing headless `exec` mode, repository tools, sandboxing, JSONL event stream, final output schema support, persisted sessions/resume, and process/tool orchestration.
 
 NVIDIA documents Codex CLI integration with NIM through a custom provider using `wire_api = "responses"`.
 
+## N0/N1 live evidence — 2026-08-31
+
+The actual local Codex installation and actual NVIDIA Developer hosted endpoint were tested.
+
+### N0 PASS
+
+```text
+codex_version=codex-cli 0.151.0
+codex_home=C:\Users\wkh12\AppData\Local\agent-delegation-skills\codex-nim\codex-home
+base_url=https://integrate.api.nvidia.com/v1
+model=nvidia/nemotron-3-super-120b-a12b
+profile=nim-worker
+config_written=True
+credential_value_logged=False
+```
+
+The setup is isolated from the user's normal Codex config and writes no credential value.
+
+### N1 PASS
+
+The actual hosted endpoint `https://integrate.api.nvidia.com/v1/responses` returned:
+
+```text
+basic_request=ok
+basic_http_status=200
+basic_decode=ok
+basic_output_shape=True
+
+tool_request=ok
+tool_http_status=200
+tool_decode=ok
+function_call_present=True
+function_name_match=True
+call_id_present=True
+arguments_valid=True
+
+overall=PASS
+credential_value_logged=False
+```
+
+This proves the hosted Developer endpoint currently provides the core Responses semantics Codex requires for this Worker candidate:
+
+```text
+/v1/responses          PASS
+auto function calling  PASS
+function call_id        PASS
+function arguments      PASS
+```
+
+Do not build a Responses compatibility proxy unless a later Codex-specific request shape exposes a bounded incompatibility.
+
 ## Codex/NIM acceptance summary
 
-The detailed commands and decision branches live in `evals/codex-nim-harness-plan.md`.
+### N0 — isolation — PASS
 
-### N0 — isolation
+The isolated `CODEX_HOME` setup is implemented in `evals/setup-codex-nim.ps1`.
 
-PASS requires an isolated Delegent-controlled `CODEX_HOME`; the user's normal Codex config is not modified and no credential is written to tracked files.
+### N1 — hosted Responses compatibility — PASS
 
-### N1 — hosted Responses compatibility
+The secret-safe live probe is implemented in `evals/probe-nim-responses.ps1`.
 
-Test the actual NVIDIA Developer hosted endpoint used by the project. Do not infer hosted `/v1/responses` support from self-hosted NIM documentation.
+### N2 — minimal `codex exec` — NEXT
 
-If Responses is unavailable, evaluate a small compatibility adapter only if the required mapping is bounded. Do not build a second full agent runtime by accident.
+Use `evals/run-codex-nim-smoke.ps1`.
 
-### N2 — minimal `codex exec`
+The probe recreates the isolated config and runs the equivalent of:
 
-A real Nemotron turn must complete through the custom NIM provider with parseable JSONL and no secret leakage.
+```text
+codex exec
+--strict-config
+-p nim-worker
+--ephemeral
+--json
+--sandbox read-only
+--ignore-rules
+```
+
+with stdin task:
+
+```text
+Reply with exactly WORKER_OK.
+```
+
+The initial NIM Worker profile intentionally disables optional Codex surfaces such as web search, multi-agent, bundled skills, and orchestrator MCP/skills. V0.1 only needs the core Codex function-tool harness; the Lead owns orchestration.
+
+PASS requires:
+
+```text
+process exit code 0
+parseable JSONL
+thread.started with thread_id
+turn.completed
+no turn.failed/error
+exact final agent message WORKER_OK
+no credential leakage
+```
+
+The smoke handles native Codex executables and Windows npm PowerShell/CMD shims and bounds the process tree on timeout.
 
 ### N3 — repository tools
 
-Under read-only sandbox, Nemotron must use Codex's real repository tools to inspect `README.md` without modifying the tree.
+After N2 passes, use the same isolated profile under read-only sandbox and require Nemotron to inspect `README.md` through Codex's real repository/tool path without modifying the tree.
 
 ### N4 — terminal handoff
 
@@ -219,27 +290,14 @@ Before any real Worker call:
 5. stderr/logging is not merged into the machine protocol stream;
 6. final handoff passes exact schema + sensitive-value filtering before entering Lead context.
 
-For controlled composition:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireEvalWorkflow
-```
-
-For Matt integration:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireMattWorkflows
-```
-
 ## Immediate next action
 
-Do not run another OpenCode A.7 as the next test.
+Do not run another OpenCode A.7.
 
-Start Codex/NIM N0-N1:
+Run N2 only after syncing the latest branch:
 
-1. record `codex --version`;
-2. inspect `codex exec --help`;
-3. create an isolated test `CODEX_HOME`;
-4. configure the NIM custom provider without modifying normal Codex settings;
-5. test the actual hosted NVIDIA `/v1/responses` behavior;
-6. if compatible, run the first ephemeral read-only `codex exec -p nim-worker --json` smoke.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\run-codex-nim-smoke.ps1
+```
+
+If N2 passes, proceed immediately to a separate N3 read-only README tool-use probe. Do not integrate the Codex runtime into `$delegent` routing before N3/N4/N5/N6 are validated.
