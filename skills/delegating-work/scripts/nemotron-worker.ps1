@@ -38,6 +38,9 @@ $env:XDG_DATA_HOME = Join-Path $runtime 'data'
 $env:XDG_CACHE_HOME = Join-Path $runtime 'cache'
 $env:XDG_STATE_HOME = Join-Path $runtime 'state'
 $env:OPENCODE_CONFIG = $null
+# Do not inherit a caller-owned explicit config directory. Normal Worker runs
+# install Delegent-owned tools into their own explicit directory below.
+$env:OPENCODE_CONFIG_DIR = $null
 $baseConfigPath = Join-Path $skillRoot 'opencode.json'
 $env:OPENCODE_CONFIG_CONTENT = Get-Content -Raw $baseConfigPath
 
@@ -86,17 +89,14 @@ try {
     if ($invocation.Agent) { $config.default_agent = [string]$invocation.Agent }
     $env:OPENCODE_CONFIG_CONTENT = $config | ConvertTo-Json -Depth 32 -Compress
 
-    # Install only Delegent-owned, side-effect-free terminal tools into the
-    # wrapper-controlled OpenCode config root. Target repositories remain clean.
-    $toolTarget = Join-Path $env:XDG_CONFIG_HOME 'opencode\tools'
-    New-Item -ItemType Directory -Force -Path $toolTarget -ErrorAction Stop | Out-Null
-    foreach ($toolName in @('delegent_handoff.ts', 'delegent_decision.ts')) {
-        $source = Join-Path (Join-Path $skillRoot 'tools') $toolName
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw 'Missing Delegent terminal tool.'
-        }
-        Copy-Item -LiteralPath $source -Destination (Join-Path $toolTarget $toolName) -Force -ErrorAction Stop
-    }
+    # Use OpenCode's explicit config-directory seam rather than inferring a
+    # global tools path from XDG_CONFIG_HOME. OpenCode 1.18.25 adds this exact
+    # directory to discovery, installs @opencode-ai/plugin there, and waits for
+    # that dependency before importing custom tools.
+    $delegentConfigDir = Join-Path $runtime 'delegent-config'
+    New-Item -ItemType Directory -Force -Path $delegentConfigDir -ErrorAction Stop | Out-Null
+    $env:OPENCODE_CONFIG_DIR = $delegentConfigDir
+    $null = Install-DelegentTerminalTools -SkillRoot $skillRoot -ConfigDir $delegentConfigDir
 }
 catch {
     $result = New-DelegentProtocolError -Kind runtime_output_error
