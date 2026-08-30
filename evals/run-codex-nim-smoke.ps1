@@ -30,6 +30,52 @@ function Get-NimCredential {
     return $null
 }
 
+function Get-CodexLaunchSpec {
+    $native = Get-Command codex.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($native) {
+        return [pscustomobject]@{
+            VersionCommand = $native.Source
+            FileName = $native.Source
+            ArgumentsPrefix = ''
+            ArgumentsSuffix = ''
+            Kind = 'native'
+        }
+    }
+
+    $command = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $command) { return $null }
+
+    $extension = [IO.Path]::GetExtension([string]$command.Source).ToLowerInvariant()
+    if ($extension -eq '.ps1') {
+        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $powershell.Source
+            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
+            ArgumentsSuffix = ''
+            Kind = 'powershell-shim'
+        }
+    }
+    if ($extension -eq '.cmd' -or $extension -eq '.bat') {
+        $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $comspec
+            ArgumentsPrefix = ('/d /s /c ""' + $command.Source + '" ')
+            ArgumentsSuffix = '"'
+            Kind = 'cmd-shim'
+        }
+    }
+
+    return [pscustomobject]@{
+        VersionCommand = $command.Source
+        FileName = $command.Source
+        ArgumentsPrefix = ''
+        ArgumentsSuffix = ''
+        Kind = 'application'
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     if ($env:LOCALAPPDATA) {
         $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'agent-delegation-skills\codex-nim'
@@ -50,8 +96,8 @@ if ([string]::IsNullOrWhiteSpace($key)) {
 }
 $key = $key.Trim('"').Trim("'")
 
-$codexCommand = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $codexCommand) {
+$launchSpec = Get-CodexLaunchSpec
+if ($null -eq $launchSpec) {
     Write-Output 'CODEX_NIM_SMOKE'
     Write-Output 'credential_present=True'
     Write-Output 'codex_found=False'
@@ -61,6 +107,7 @@ if (-not $codexCommand) {
     exit 1
 }
 
+$codexCommand = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
 $codexVersion = (& $codexCommand.Source --version 2>$null | Select-Object -First 1)
 if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) { $codexVersion = 'unknown' }
 
@@ -85,9 +132,10 @@ try {
     $env:CODEX_HOME = $codexHome
     $env:NIM_API_KEY = $key
 
+    $codexArgs = 'exec --strict-config -p nim-worker --ephemeral --json --sandbox read-only --ignore-rules -'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $codexCommand.Source
-    $startInfo.Arguments = 'exec --strict-config -p nim-worker --ephemeral --json --sandbox read-only --ignore-rules -'
+    $startInfo.FileName = $launchSpec.FileName
+    $startInfo.Arguments = $launchSpec.ArgumentsPrefix + $codexArgs + $launchSpec.ArgumentsSuffix
     $startInfo.WorkingDirectory = $repoRoot
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
@@ -175,6 +223,7 @@ $overallPass = (
 
 Write-Output 'CODEX_NIM_SMOKE'
 Write-Output "codex_version=$([string]$codexVersion)"
+Write-Output "codex_launcher=$($launchSpec.Kind)"
 Write-Output "codex_home=$codexHome"
 Write-Output 'profile=nim-worker'
 Write-Output 'sandbox=read-only'
