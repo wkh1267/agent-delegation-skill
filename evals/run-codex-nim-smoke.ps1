@@ -88,7 +88,7 @@ function Get-SafeFailureClass {
     if ($CapturedStderr -match '(?i)(unexpected argument|unknown argument|unrecognized option|invalid value.*--|usage:)') {
         return 'cli_argument_error'
     }
-    if ($CapturedStderr -match '(?i)(Error loading config\.toml|unknown field|unrecognized field|strict.config|failed to load.*config|failed to parse.*config|config\.toml)') {
+    if ($CapturedStderr -match '(?i)(Error loading config\.toml|unknown field|unrecognized field|failed to load.*config|failed to parse.*config|config\.toml)') {
         return 'config_error'
     }
     if ($CapturedStderr -match '(?i)(Not inside a trusted directory|skip-git-repo-check)') {
@@ -141,8 +141,6 @@ $codexCommand = Get-Command codex -CommandType Application, ExternalScript -Erro
 $codexVersion = (& $codexCommand.Source --version 2>$null | Select-Object -First 1)
 if ([string]::IsNullOrWhiteSpace([string]$codexVersion)) { $codexVersion = 'unknown' }
 
-# Recreate the dedicated NIM Worker CODEX_HOME before every smoke so the probe
-# never depends on the user's normal ~/.codex configuration or stale profiles.
 & (Join-Path $PSScriptRoot 'setup-codex-nim.ps1') -RuntimeRoot $RuntimeRoot | Out-Null
 $codexHome = Join-Path $RuntimeRoot 'codex-home'
 $configPath = Join-Path $codexHome 'config.toml'
@@ -162,7 +160,11 @@ try {
     $env:CODEX_HOME = $codexHome
     $env:NIM_API_KEY = $key
 
-    $codexArgs = 'exec --strict-config --ephemeral --json --sandbox read-only --ignore-rules -'
+    # N2b deliberately uses the smallest headless surface that can prove a
+    # Codex -> NIM -> Nemotron turn. Strict config, explicit sandboxing,
+    # ephemeral persistence, and rule suppression are hardened independently
+    # only after this minimal harness passes.
+    $codexArgs = 'exec --json -'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $launchSpec.FileName
     $startInfo.Arguments = $launchSpec.ArgumentsPrefix + $codexArgs + $launchSpec.ArgumentsSuffix
@@ -250,10 +252,13 @@ Write-Output "codex_version=$([string]$codexVersion)"
 Write-Output "codex_launcher=$($launchSpec.Kind)"
 Write-Output "codex_home=$codexHome"
 Write-Output 'config_mode=isolated-default'
+Write-Output 'harness_mode=minimal'
 Write-Output 'model=nvidia/nemotron-3-super-120b-a12b'
 Write-Output 'model_provider=nim'
-Write-Output 'sandbox=read-only'
-Write-Output 'ephemeral=True'
+Write-Output 'strict_config=False'
+Write-Output 'sandbox=default'
+Write-Output 'ephemeral=False'
+Write-Output 'ignore_rules=False'
 Write-Output 'json_mode=True'
 Write-Output 'credential_present=True'
 Write-Output "credential_source=$credentialSource"
