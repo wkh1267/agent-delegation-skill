@@ -11,8 +11,8 @@ Delegent remains workflow-agnostic. Matt Pocock's `implement` workflow is a late
 ```text
 A. Worker protocol — fake/local                         PASS (initial structured design)
 A.5 Live compatibility isolation                       PASS/isolated blocker
-A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 + catalog invariant tests)
-A.7 Live terminal-tool Worker probe                    BLOCKED (first live call: missing_terminal_handoff)
+A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 + catalog/discovery invariants)
+A.7 Live terminal-tool Worker probe                    BLOCKED (custom-tool discovery fix pending live recheck)
 B. Controlled Delegent composition                     WAITING ON A.7
    B1 trivial Lead-owned routing
    B2 controlled delegated routing
@@ -68,7 +68,7 @@ delegent_decision
   confidence
 ```
 
-The tools are side-effect free and are installed only into the wrapper-controlled OpenCode config root. The adapter reads only `parts[].state.input` for exactly one terminal Delegent tool call.
+The tools are side-effect free and are installed only into the wrapper-controlled OpenCode config directory. The adapter reads only `parts[].state.input` for exactly one terminal Delegent tool call.
 
 Deterministic acceptance covers:
 
@@ -88,18 +88,18 @@ Deterministic acceptance covers:
 - no `format: json_schema` or direct `agent` field in Worker message body;
 - wrapper flag/session compatibility;
 - server lifecycle cleanup;
-- terminal-tool catalog validation and deterministic unavailable-tool error.
+- terminal-tool catalog validation and deterministic unavailable-tool error;
+- explicit `OPENCODE_CONFIG_DIR` discovery path regression.
 
-Final local/CI result before the first A.7 call:
+Current Windows PowerShell 5.1 CI:
 
 ```text
-Windows PowerShell 5.1
 PASS 18/18
+PASS 3/3 catalog invariant
+PASS explicit terminal tool discovery config
 ```
 
-The suite is retained as a Windows GitHub Actions regression check. During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
-
-After the first A.7 failure, a separate deterministic catalog invariant was added. The wrapper now queries OpenCode's runtime `GET /experimental/tool/ids` endpoint before any Worker inference call and requires both `delegent_handoff` and `delegent_decision` to be registered. The catalog helper has its own fake-only regression cases in `evals/test-terminal-tool-catalog.ps1`.
+During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
 
 No real NIM call is needed for these deterministic tests.
 
@@ -115,17 +115,39 @@ exit_code: none
 summary: Supported session sources contained no terminal structured result.
 ```
 
-This proves the wrapper/server/session path returned deterministically, but the first run did not prove whether the Delegent custom tools had been discovered by the live OpenCode process or whether the model simply ended without calling one.
+That result did not distinguish missing tool discovery from a model that simply ended without calling a terminal tool, so a runtime catalog invariant was added using OpenCode's `GET /experimental/tool/ids` endpoint.
 
-The runtime catalog invariant added after that failure removes this ambiguity on the next call:
+The next live call returned before inference:
 
-- `terminal_tools_unavailable` means the live OpenCode process did not register both required Delegent tools; stop and fix discovery/loading before another Worker call.
-- `missing_terminal_handoff` after the catalog invariant means both terminal tool IDs were registered before inference, but no completed terminal tool call appeared in the returned or recovered assistant messages. At that point investigate the normal-tool/model behavior rather than the installation path.
-- a compact eight-field handoff means A.7 passes.
+```text
+WORKER_PROTOCOL_ERROR
+kind: terminal_tools_unavailable
+session_id: none
+exit_code: none
+summary: OpenCode did not register the required Delegent terminal tools.
+```
+
+This proved the current blocker was custom-tool discovery, not Nemotron tool-choice behavior.
+
+Inspection of OpenCode 1.18.25 showed that `OPENCODE_CONFIG_DIR` is an explicit discovery directory. OpenCode loads `tools/*.ts` from that exact directory, installs `@opencode-ai/plugin` for it, and waits for the dependency before importing matching custom tools. The wrapper therefore no longer infers the global custom-tool path from `XDG_CONFIG_HOME`; it now:
+
+```text
+DELEGENT_RUNTIME
+  -> delegent-config
+      -> tools
+          -> delegent_handoff.ts
+          -> delegent_decision.ts
+```
+
+and exports that `delegent-config` path through `OPENCODE_CONFIG_DIR` before starting `opencode serve`.
+
+The runtime catalog invariant remains in place. The next live call therefore has three meaningful outcomes:
+
+- `terminal_tools_unavailable`: explicit discovery still failed; investigate OpenCode import/dependency loading without spending a Worker inference call.
+- `missing_terminal_handoff`: both terminal tools were registered before inference, but Nemotron did not produce a completed terminal call; investigate normal-tool/tool-choice behavior.
+- compact eight-field handoff: A.7 passes.
 
 OpenCode 1.18.25's normal message path leaves tool choice to the provider/model; its special `format: json_schema` path is the path that explicitly requires a tool call, and that special path is already known to fail in this stack. Do not re-enable it merely to force a terminal call.
-
-Rerun one bounded read-only Worker call through the wrapper after syncing the catalog-invariant commit.
 
 From the repository root:
 
