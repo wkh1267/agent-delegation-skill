@@ -48,6 +48,25 @@ $configPath = Join-Path $codexHome 'config.toml'
 $safeBaseUrl = ConvertTo-TomlBasicString $normalizedBaseUrl
 $safeModel = ConvertTo-TomlBasicString $Model
 $configText = @"
+# Keep the V0.1 NIM Worker surface intentionally small. The main Codex Lead owns
+# orchestration; this worker only needs the standard function-tool harness.
+web_search = "disabled"
+
+[agents]
+enabled = false
+
+[features]
+multi_agent_v2 = false
+
+[skills.bundled]
+enabled = false
+
+[orchestrator.skills]
+enabled = false
+
+[orchestrator.mcp]
+enabled = false
+
 [model_providers.nim]
 name = "NVIDIA NIM"
 base_url = "$safeBaseUrl"
@@ -69,5 +88,6 @@ Write-Output "config_path=$configPath"
 Write-Output "base_url=$normalizedBaseUrl"
 Write-Output "model=$Model"
 Write-Output 'profile=nim-worker'
+Write-Output 'optional_tool_surface=minimal'
 Write-Output 'config_written=True'
 Write-Output 'credential_value_logged=False'
