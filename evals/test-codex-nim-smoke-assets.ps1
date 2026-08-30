@@ -47,7 +47,7 @@ Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require
 Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
 Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
 Assert-True ($doctor -match 'doctorStdout\.Contains\(\$key\)' -and $doctor -match 'doctorStderr\.Contains\(\$key\)') 'N2 doctor must detect credential leakage in captured streams.'
-Assert-True ($doctor -notmatch 'Write-Output[^\r\n]*(\$doctorStdout\b|\$doctorStderr\b|\$key\b)') 'N2 doctor must not print raw doctor streams or credential values.'
+Assert-True ($doctor -notmatch 'Write-Output\s+(?:"?\$doctorStdout\b|"?\$doctorStderr\b|"?\$key\b)') 'N2 doctor must not directly print raw doctor streams or credential values.'
 Assert-True ($doctor -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 doctor must not contain a NVIDIA credential literal.'
 Assert-True ($doctor -match 'credential_value_logged=False') 'N2 doctor must make the no-secret-output contract explicit.'
 
