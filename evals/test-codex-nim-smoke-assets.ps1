@@ -38,7 +38,7 @@ Assert-True ($smoke -match 'app_server_init_error') 'N2 smoke must classify in-p
 Assert-True ($smoke -match 'environment_manager_error' -and $smoke -match 'exec_policy_error') 'N2 smoke must classify runtime-only startup seams.'
 Assert-True ($smoke -match 'Get-SafeFailureClass' -and $smoke -match 'failure_class=') 'N2 smoke must classify pre-thread failures without printing raw stderr.'
 Assert-True ($smoke -match 'Get-SafeStderrSummary' -and $smoke -match 'stderr_summary=') 'N2 smoke must expose a bounded sanitized startup error summary.'
-Assert-True ($smoke -match "Replace\(\$Credential, '<redacted>'\)") 'N2 stderr summary must redact the exact credential before output.'
+Assert-True ($smoke -match 'Replace\(\$Credential, ''<redacted>''\)') 'N2 stderr summary must redact the exact credential before output.'
 Assert-True ($smoke -match 'https\?://\\S\+' -and $smoke -match "'<url>'") 'N2 stderr summary must redact URLs.'
 Assert-True ($smoke -match "'<path>'" -and $smoke -match 'A-Z.*\\\\') 'N2 stderr summary must redact Windows paths.'
 Assert-True ($smoke -match 'stdout\.Contains\(\$key\)' -and $smoke -match 'stderr\.Contains\(\$key\)') 'N2 smoke must fail if the credential appears in captured process output.'
