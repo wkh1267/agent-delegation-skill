@@ -23,11 +23,36 @@ $runtime = Join-Path ([IO.Path]::GetTempPath()) ('delegent-terminal-diagnostic-'
 $server = $null
 $serverJob = [IntPtr]::Zero
 
+function Invoke-DiagnosticGet {
+    param(
+        [scriptblock]$Request,
+        [string]$Path,
+        [int]$TimeoutSeconds
+    )
+
+    try {
+        return [pscustomobject]@{
+            Status = 'ok'
+            Content = [string](& $Request $Path $TimeoutSeconds)
+        }
+    }
+    catch {
+        $status = 'error'
+        if ($_.Exception -is [Net.WebException] -and $_.Exception.Status -eq [Net.WebExceptionStatus]::Timeout) {
+            $status = 'timeout'
+        }
+        return [pscustomobject]@{
+            Status = $status
+            Content = $null
+        }
+    }
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 
     # Use a non-secret placeholder only so {env:api_key} config substitution is deterministic.
-    # This diagnostic never sends a model request.
+    # This diagnostic never creates a session or sends a model request.
     $env:api_key = 'delegent-diagnostic-placeholder'
     $env:XDG_CONFIG_HOME = Join-Path $runtime 'config'
     $env:XDG_DATA_HOME = Join-Path $runtime 'data'
@@ -60,6 +85,7 @@ try {
         $config | Add-Member -MemberType NoteProperty -Name plugin -Value $pluginList
     }
     $env:OPENCODE_CONFIG_CONTENT = $config | ConvertTo-Json -Depth 32 -Compress
+    $injectedPluginConfigured = @($config.plugin | ForEach-Object { [string]$_ }) -ccontains $terminalPluginUri
 
     $listener = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
     $listener.Start()
@@ -101,24 +127,47 @@ try {
     $health = $null
     $healthDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $healthDeadline -and -not $server.HasExited) {
-        try {
-            $candidate = (& $request '/global/health' 1) | ConvertFrom-Json -ErrorAction Stop
-            if ($candidate.healthy -eq $true) {
-                $health = $candidate
-                break
+        $healthRequest = Invoke-DiagnosticGet -Request $request -Path '/global/health' -TimeoutSeconds 1
+        if ($healthRequest.Status -eq 'ok') {
+            try {
+                $candidate = $healthRequest.Content | ConvertFrom-Json -ErrorAction Stop
+                if ($candidate.healthy -eq $true) {
+                    $health = $candidate
+                    break
+                }
             }
+            catch {}
         }
-        catch {}
         Start-Sleep -Milliseconds 100
     }
     if ($null -eq $health) { throw 'OpenCode server did not become healthy.' }
 
-    $effectiveConfig = (& $request '/config' 10) | ConvertFrom-Json -ErrorAction Stop
-    $toolIds = @(((& $request '/experimental/tool/ids' 20) | ConvertFrom-Json -ErrorAction Stop))
-
+    # Keep config and catalog probes independent. ToolRegistry initialization may
+    # block even when effective config is already readable; preserve both facts.
+    $configRequest = Invoke-DiagnosticGet -Request $request -Path '/config' -TimeoutSeconds 10
+    $effectiveConfig = $null
     $effectivePlugins = @()
-    if ($null -ne $effectiveConfig.PSObject.Properties['plugin']) {
-        $effectivePlugins = @($effectiveConfig.plugin | ForEach-Object { [string]$_ })
+    if ($configRequest.Status -eq 'ok') {
+        try {
+            $effectiveConfig = $configRequest.Content | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne $effectiveConfig.PSObject.Properties['plugin']) {
+                $effectivePlugins = @($effectiveConfig.plugin | ForEach-Object { [string]$_ })
+            }
+        }
+        catch {
+            $configRequest.Status = 'decode_error'
+        }
+    }
+
+    $catalogRequest = Invoke-DiagnosticGet -Request $request -Path '/experimental/tool/ids' -TimeoutSeconds 30
+    $toolIds = @()
+    if ($catalogRequest.Status -eq 'ok') {
+        try {
+            $toolIds = @(($catalogRequest.Content | ConvertFrom-Json -ErrorAction Stop))
+        }
+        catch {
+            $catalogRequest.Status = 'decode_error'
+        }
     }
 
     $pluginConfigured = $effectivePlugins -ccontains $terminalPluginUri
@@ -131,10 +180,14 @@ try {
     Write-Output "inherited_opencode_pure=$pureInheritedText"
     Write-Output 'diagnostic_opencode_pure=false'
     Write-Output "plugin_file_exists=$([bool](Test-Path -LiteralPath $terminalPluginPath -PathType Leaf))"
+    Write-Output "injected_plugin_configured=$([bool]$injectedPluginConfigured)"
+    Write-Output "effective_config_request=$($configRequest.Status)"
     Write-Output "plugin_configured=$([bool]$pluginConfigured)"
     Write-Output "configured_plugin_count=$($effectivePlugins.Count)"
+    Write-Output "catalog_request=$($catalogRequest.Status)"
     Write-Output "handoff_registered=$([bool]$handoffRegistered)"
     Write-Output "decision_registered=$([bool]$decisionRegistered)"
+    Write-Output "server_exited=$([bool]$server.HasExited)"
     Write-Output 'model_inference_used=false'
 }
 finally {
