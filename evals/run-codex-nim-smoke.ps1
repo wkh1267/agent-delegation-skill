@@ -91,11 +91,17 @@ function Get-SafeFailureClass {
     if ($CapturedStderr -match '(?i)(Error loading config\.toml|unknown field|unrecognized field|failed to load.*config|failed to parse.*config|config\.toml)') {
         return 'config_error'
     }
+    if ($CapturedStderr -match '(?i)(Error loading rules|exec.?policy|rule file)') {
+        return 'exec_policy_error'
+    }
     if ($CapturedStderr -match '(?i)(Not inside a trusted directory|skip-git-repo-check)') {
         return 'git_trust_error'
     }
     if ($CapturedStderr -match '(?i)(failed to initialize in-process app-server client)') {
         return 'app_server_init_error'
+    }
+    if ($CapturedStderr -match '(?i)(environment manager|environment config|exec-server protocol error|local environment requires configured runtime paths|CODEX_EXEC_SERVER_URL)') {
+        return 'environment_manager_error'
     }
     if ($CapturedStderr -match '(?i)(401|403|unauthorized|forbidden|authentication|api key|credential|NIM_API_KEY)') {
         return 'auth_error'
@@ -104,6 +110,41 @@ function Get-SafeFailureClass {
         return 'provider_request_error'
     }
     return 'startup_error_other'
+}
+
+function Get-SafeStderrSummary {
+    param(
+        [string]$CapturedStderr,
+        [string]$Credential
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CapturedStderr)) { return 'none' }
+
+    $safe = [string]$CapturedStderr
+    if (-not [string]::IsNullOrEmpty($Credential)) {
+        $safe = $safe.Replace($Credential, '<redacted>')
+    }
+
+    # Strip secret-like values and user-specific locations before exposing a
+    # bounded diagnostic fragment. Keep only the semantic error text needed to
+    # identify the failing Codex startup branch.
+    $safe = [regex]::Replace($safe, '(?i)nvapi-[A-Za-z0-9_-]+', '<redacted>')
+    $safe = [regex]::Replace($safe, '(?i)\bBearer\s+\S+', 'Bearer <redacted>')
+    $safe = [regex]::Replace($safe, '(?i)\b(?:sk|key|token)-[A-Za-z0-9_-]{12,}', '<redacted>')
+    $safe = [regex]::Replace($safe, 'https?://\S+', '<url>')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\(?:[^\\\s:"<>|]+\\)*[^\\\s:"<>|]*', '<path>')
+    $safe = [regex]::Replace($safe, '(?<![A-Za-z0-9_])/(?:[^/\s]+/)+[^\s:;,]+', '<path>')
+    $safe = [regex]::Replace($safe, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
+    $safe = [regex]::Replace($safe, '\b[A-Fa-f0-9]{32,}\b', '<id>')
+    $safe = [regex]::Replace($safe, '\b[A-Za-z0-9_-]{48,}\b', '<token>')
+    $safe = [regex]::Replace($safe, '[\r\n\t]+', ' ')
+    $safe = [regex]::Replace($safe, '\s{2,}', ' ').Trim()
+
+    if ($safe.Length -gt 400) {
+        $safe = $safe.Substring(0, 400) + '...'
+    }
+    if ([string]::IsNullOrWhiteSpace($safe)) { return 'redacted' }
+    return $safe
 }
 
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
@@ -232,6 +273,7 @@ if (-not [string]::IsNullOrEmpty($key)) {
 }
 $stderrPresent = -not [string]::IsNullOrWhiteSpace($stderr)
 $failureClass = Get-SafeFailureClass -CapturedStderr $stderr -ProcessExitCode $exitCode
+$stderrSummary = Get-SafeStderrSummary -CapturedStderr $stderr -Credential $key
 $eventTypes = @($events | ForEach-Object { [string]$_.type } | Select-Object -Unique)
 $eventTypesText = if ($eventTypes.Count -eq 0) { 'none' } else { $eventTypes -join ',' }
 $exitCodeText = if ($null -eq $exitCode) { 'none' } else { [string]$exitCode }
@@ -266,6 +308,7 @@ Write-Output 'process_started=True'
 Write-Output "timed_out=$([bool]$timedOut)"
 Write-Output "process_exit_code=$exitCodeText"
 Write-Output "failure_class=$failureClass"
+Write-Output "stderr_summary=$stderrSummary"
 Write-Output "jsonl_line_count=$($lines.Count)"
 Write-Output "jsonl_decode_errors=$decodeErrors"
 Write-Output "event_types=$eventTypesText"
