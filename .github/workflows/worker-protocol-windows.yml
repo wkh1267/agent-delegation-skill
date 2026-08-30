@@ -16,7 +16,11 @@ jobs:
         run: |
           $PSVersionTable.PSVersion
           powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\debug-worker-protocol.ps1
-      - name: Run fake-only Worker protocol tests
+      - name: Probe same-scope fake-only tests
         shell: powershell
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-worker-protocol.ps1
+          $source = Get-Content -Raw .\evals\test-worker-protocol.ps1
+          $patched = $source.Replace('        & $test.Value', '        . $test.Value')
+          if ($patched -ceq $source) { throw 'Same-scope probe replacement did not apply.' }
+          Set-Content -LiteralPath .\evals\test-worker-protocol-same-scope.ps1 -Value $patched -Encoding UTF8
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-worker-protocol-same-scope.ps1
