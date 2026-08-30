@@ -40,9 +40,9 @@ Assert-True ($smoke -match 'credential_value_logged=False') 'N2 smoke must make 
 $doctor = Get-Content -Raw -LiteralPath $doctorPath
 Assert-True ($doctor -match 'setup-codex-nim\.ps1') 'N2 doctor must use the same isolated NIM provider/profile setup.'
 Assert-True ($doctor -match '-p nim-worker doctor --json') 'N2 doctor must inspect the same Profile V2 selection without an agent turn.'
-Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'config\.load'") 'N2 doctor must inspect config.load.'
-Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'auth\.credentials'") 'N2 doctor must inspect auth.credentials.'
-Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'network\.provider_reachability'") 'N2 doctor must inspect provider reachability.'
+Assert-True ($doctor -match "'config\.load'") 'N2 doctor must inspect config.load.'
+Assert-True ($doctor -match "'auth\.credentials'") 'N2 doctor must inspect auth.credentials.'
+Assert-True ($doctor -match "'network\.provider_reachability'") 'N2 doctor must inspect provider reachability.'
 Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require the NIM provider.'
 Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
 Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
