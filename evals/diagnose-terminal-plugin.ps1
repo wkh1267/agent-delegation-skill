@@ -19,6 +19,20 @@ $old = @{
     OPENCODE_SERVER_PASSWORD = $env:OPENCODE_SERVER_PASSWORD
 }
 
+# Reuse only Delegent's production config cache so OpenCode does not turn this
+# zero-inference diagnostic into a fresh @opencode-ai/plugin bootstrap test.
+# Session/data/state remain isolated under a temporary diagnostic root.
+$sharedRuntime = $null
+if ($env:DELEGENT_RUNTIME) {
+    $sharedRuntime = $env:DELEGENT_RUNTIME
+}
+elseif ($env:LOCALAPPDATA) {
+    $sharedRuntime = Join-Path $env:LOCALAPPDATA 'agent-delegation-skills\opencode'
+}
+else {
+    $sharedRuntime = Join-Path ([IO.Path]::GetTempPath()) 'agent-delegation-skills\opencode'
+}
+$sharedConfigHome = Join-Path $sharedRuntime 'config'
 $runtime = Join-Path ([IO.Path]::GetTempPath()) ('delegent-terminal-diagnostic-' + [Guid]::NewGuid().ToString('N'))
 $server = $null
 $serverJob = [IntPtr]::Zero
@@ -50,11 +64,12 @@ function Invoke-DiagnosticGet {
 
 try {
     New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+    New-Item -ItemType Directory -Force -Path $sharedConfigHome | Out-Null
 
     # Use a non-secret placeholder only so {env:api_key} config substitution is deterministic.
     # This diagnostic never creates a session or sends a model request.
     $env:api_key = 'delegent-diagnostic-placeholder'
-    $env:XDG_CONFIG_HOME = Join-Path $runtime 'config'
+    $env:XDG_CONFIG_HOME = $sharedConfigHome
     $env:XDG_DATA_HOME = Join-Path $runtime 'data'
     $env:XDG_CACHE_HOME = Join-Path $runtime 'cache'
     $env:XDG_STATE_HOME = Join-Path $runtime 'state'
@@ -179,6 +194,7 @@ try {
     Write-Output "opencode_version=$([string]$health.version)"
     Write-Output "inherited_opencode_pure=$pureInheritedText"
     Write-Output 'diagnostic_opencode_pure=false'
+    Write-Output 'shared_production_config_cache=true'
     Write-Output "plugin_file_exists=$([bool](Test-Path -LiteralPath $terminalPluginPath -PathType Leaf))"
     Write-Output "injected_plugin_configured=$([bool]$injectedPluginConfigured)"
     Write-Output "effective_config_request=$($configRequest.Status)"
