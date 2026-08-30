@@ -1,3 +1,13 @@
+$script:DelegentTerminalNormalFields = @(
+    'status',
+    'summary',
+    'evidence',
+    'changes',
+    'tests',
+    'risks',
+    'decisions_needed',
+    'review_targets'
+)
 $script:DelegentDecisionToolFields = @(
     'question',
     'evidence',
@@ -24,11 +34,54 @@ function Install-DelegentTerminalTools {
     return $toolTarget
 }
 
+function Get-DelegentTerminalFieldNames {
+    param([object]$Value)
+
+    if ($null -eq $Value -or $Value -is [string]) { return @() }
+    if ($Value -is [Collections.IDictionary]) {
+        return @($Value.Keys | ForEach-Object { [string]$_ })
+    }
+    return @($Value.PSObject.Properties | ForEach-Object Name)
+}
+
+function Get-DelegentTerminalFieldValue {
+    param(
+        [object]$Value,
+        [string]$Name
+    )
+
+    if ($Value -is [Collections.IDictionary]) {
+        return $Value[$Name]
+    }
+    $property = $Value.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Test-DelegentTerminalFields {
+    param(
+        [object]$Value,
+        [string[]]$Expected
+    )
+
+    $actual = @(Get-DelegentTerminalFieldNames $Value)
+    if ($actual.Count -ne $Expected.Count) { return $false }
+    foreach ($name in $Expected) {
+        if ($actual -cnotcontains $name) { return $false }
+        $fieldValue = Get-DelegentTerminalFieldValue $Value $name
+        if ($fieldValue -isnot [string] -or [string]::IsNullOrWhiteSpace($fieldValue)) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Get-DelegentTerminalResult {
     param([object]$Message)
 
     if ($null -eq $Message) { return $null }
-    $info = $Message.PSObject.Properties['info'].Value
+    $infoProperty = $Message.PSObject.Properties['info']
+    $info = if ($null -ne $infoProperty) { $infoProperty.Value } else { $null }
     if ($null -eq $info -or [string]$info.role -cne 'assistant') { return $null }
     if ($null -ne $info.PSObject.Properties['error'] -and $null -ne $info.error) {
         throw [InvalidOperationException]::new('Worker runtime error.')
@@ -51,23 +104,35 @@ function Get-DelegentTerminalResult {
     $input = $part.state.input
 
     if ($part.tool -ceq 'delegent_handoff') {
-        if (-not (Test-DelegentExactFields $input $script:DelegentNormalFields) -or
-            $input.status -cnotin @('completed', 'blocked')) {
+        if (-not (Test-DelegentTerminalFields $input $script:DelegentTerminalNormalFields)) {
             throw [FormatException]::new('Malformed terminal handoff arguments.')
         }
-        return $input
+        $status = [string](Get-DelegentTerminalFieldValue $input 'status')
+        if ($status -cnotin @('completed', 'blocked')) {
+            throw [FormatException]::new('Malformed terminal handoff status.')
+        }
+        return [pscustomobject][ordered]@{
+            status = $status
+            summary = [string](Get-DelegentTerminalFieldValue $input 'summary')
+            evidence = [string](Get-DelegentTerminalFieldValue $input 'evidence')
+            changes = [string](Get-DelegentTerminalFieldValue $input 'changes')
+            tests = [string](Get-DelegentTerminalFieldValue $input 'tests')
+            risks = [string](Get-DelegentTerminalFieldValue $input 'risks')
+            decisions_needed = [string](Get-DelegentTerminalFieldValue $input 'decisions_needed')
+            review_targets = [string](Get-DelegentTerminalFieldValue $input 'review_targets')
+        }
     }
 
-    if (-not (Test-DelegentExactFields $input $script:DelegentDecisionToolFields)) {
+    if (-not (Test-DelegentTerminalFields $input $script:DelegentDecisionToolFields)) {
         throw [FormatException]::new('Malformed terminal decision arguments.')
     }
     return [pscustomobject][ordered]@{
         kind = 'decision_needed'
-        question = $input.question
-        evidence = $input.evidence
-        options = $input.options
-        recommendation = $input.recommendation
-        confidence = $input.confidence
+        question = [string](Get-DelegentTerminalFieldValue $input 'question')
+        evidence = [string](Get-DelegentTerminalFieldValue $input 'evidence')
+        options = [string](Get-DelegentTerminalFieldValue $input 'options')
+        recommendation = [string](Get-DelegentTerminalFieldValue $input 'recommendation')
+        confidence = [string](Get-DelegentTerminalFieldValue $input 'confidence')
     }
 }
 
