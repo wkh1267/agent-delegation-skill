@@ -27,7 +27,7 @@ A.7 OpenCode live terminal handoff                      PAUSED / runtime-specifi
 
 N0  Codex/NIM baseline + isolated CODEX_HOME            PASS
 N1  Hosted NIM Responses compatibility                  PASS
-N2  Minimal `codex exec` Nemotron Worker                NEXT
+N2  Minimal `codex exec` Nemotron Worker                IN PROGRESS
 N3  Real Codex repository tool use
 N4  Deterministic terminal handoff via --output-schema
 N5  Codex Worker session resume / continuity
@@ -78,11 +78,13 @@ Codex Lead / GPT-5.6 Sol
 Delegent placement
         |
         v
-codex exec -p nim-worker
+Dedicated isolated Codex Worker harness
         |
         v
 NVIDIA NIM / Nemotron
 ```
+
+The dedicated Worker uses its own isolated `CODEX_HOME`. Because that home exists only for the NIM Worker, its base `config.toml` directly selects the Nemotron model and `nim` provider. A separate Codex profile is unnecessary and is no longer part of the N2 design.
 
 This reuses Codex's existing headless `exec` mode, repository tools, sandboxing, JSONL event stream, final output schema support, persisted sessions/resume, and process/tool orchestration.
 
@@ -99,7 +101,6 @@ codex_version=codex-cli 0.151.0
 codex_home=C:\Users\wkh12\AppData\Local\agent-delegation-skills\codex-nim\codex-home
 base_url=https://integrate.api.nvidia.com/v1
 model=nvidia/nemotron-3-super-120b-a12b
-profile=nim-worker
 config_written=True
 credential_value_logged=False
 ```
@@ -145,20 +146,40 @@ Do not build a Responses compatibility proxy unless a later Codex-specific reque
 
 The isolated `CODEX_HOME` setup is implemented in `evals/setup-codex-nim.ps1`.
 
+The current setup writes one dedicated Worker config:
+
+```toml
+model = "nvidia/nemotron-3-super-120b-a12b"
+model_provider = "nim"
+
+[model_providers.nim]
+name = "NVIDIA NIM"
+base_url = "https://integrate.api.nvidia.com/v1"
+env_key = "NIM_API_KEY"
+wire_api = "responses"
+```
+
+Earlier experiments generated `nim-worker.config.toml`; current setup removes that stale generated file so profile state cannot affect N2.
+
 ### N1 — hosted Responses compatibility — PASS
 
 The secret-safe live probe is implemented in `evals/probe-nim-responses.ps1`.
 
-### N2 — minimal `codex exec` — NEXT
+### N2 — minimal `codex exec` — IN PROGRESS
 
 Use `evals/run-codex-nim-smoke.ps1`.
 
-The probe recreates the isolated config and runs the equivalent of:
+The first two live N2 attempts exited before `thread.started` with exit code 1 and no JSONL output. This proves those failures occurred in Codex startup/config/bootstrap before a model turn; they do not invalidate the N1 hosted Responses result.
+
+A diagnostic attempt then exposed an incorrect assumption in our test tooling: Codex 0.151.0 rejects `--profile` for `codex doctor`. Rather than maintain separate doctor and exec config paths, N2 was simplified so both commands read the same dedicated base `config.toml` with no profile.
+
+Exact Codex 0.151.0 source also confirms the N2 exec flags used by the smoke are valid: `--strict-config`, `--ephemeral`, `--json`, `--sandbox`, and `--ignore-rules` are all supported.
+
+The current smoke runs the equivalent of:
 
 ```text
 codex exec
 --strict-config
--p nim-worker
 --ephemeral
 --json
 --sandbox read-only
@@ -170,8 +191,6 @@ with stdin task:
 ```text
 Reply with exactly WORKER_OK.
 ```
-
-The initial NIM Worker profile intentionally disables optional Codex surfaces such as web search, multi-agent, bundled skills, and orchestrator MCP/skills. V0.1 only needs the core Codex function-tool harness; the Lead owns orchestration.
 
 PASS requires:
 
@@ -187,9 +206,15 @@ no credential leakage
 
 The smoke handles native Codex executables and Windows npm PowerShell/CMD shims and bounds the process tree on timeout.
 
+### N2 zero-inference doctor diagnostic
+
+`evals/diagnose-codex-nim-doctor.ps1` uses the same isolated base config and runs `codex doctor --json` without a profile. It uses `ProcessStartInfo` rather than invoking the PowerShell shim directly, so native stderr is captured and sanitized instead of surfacing as a PowerShell `NativeCommandError`.
+
+The diagnostic is intended to report only safe derived fields such as config load, active model/provider, credential-env presence, reachability status, and whether raw output contained the credential. It does not run an agent turn.
+
 ### N3 — repository tools
 
-After N2 passes, use the same isolated profile under read-only sandbox and require Nemotron to inspect `README.md` through Codex's real repository/tool path without modifying the tree.
+After N2 passes, use the same isolated Worker config under read-only sandbox and require Nemotron to inspect `README.md` through Codex's real repository/tool path without modifying the tree.
 
 ### N4 — terminal handoff
 
@@ -294,7 +319,13 @@ Before any real Worker call:
 
 Do not run another OpenCode A.7.
 
-Run N2 only after syncing the latest branch:
+Sync the latest branch, then run the zero-inference Codex doctor diagnostic first:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\diagnose-codex-nim-doctor.ps1
+```
+
+If the dedicated Worker config/provider/auth checks are healthy, rerun N2:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\run-codex-nim-smoke.ps1
