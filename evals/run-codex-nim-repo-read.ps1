@@ -95,14 +95,21 @@ function Get-SafeFailureClass {
         [Nullable[int]]$ProcessExitCode
     )
 
+    if (-not [string]::IsNullOrWhiteSpace($CapturedStderr)) {
+        if ($CapturedStderr -match '(?i)`justification` requires an explicit `sandbox_permissions`') { return 'tool_argument_error' }
+        if ($CapturedStderr -match '(?i)exec_command failed for' -and $CapturedStderr -match '(?i)(CreateProcess|Failed to create unified exec process|Unified exec process failed|ProcessFailed|CreateProcessAsUserW|helper[_ -].*error)') { return 'windows_sandbox_process_error' }
+        if ($CapturedStderr -match '(?i)exec_command failed for') { return 'command_tool_error' }
+        if ($CapturedStderr -match '(?i)(PSArgumentException|FullyQualifiedErrorId\s*:\s*Argument,codex\.ps1|\[codex\.ps1\])') { return 'powershell_shim_error' }
+        if ($CapturedStderr -match '(?i)(unexpected argument|unknown argument|unrecognized option|invalid value.*--|usage:)') { return 'cli_argument_error' }
+        if ($CapturedStderr -match '(?i)(Not inside a trusted directory|skip-git-repo-check)') { return 'git_trust_error' }
+        if ($CapturedStderr -match '(?i)(401|403|unauthorized|forbidden|authentication|api key|credential|NIM_API_KEY)') { return 'auth_error' }
+        if ($CapturedStderr -match '(?i)(responses|request failed|http status|status code|429|500|502|503|504)') { return 'provider_request_error' }
+        if ($null -ne $ProcessExitCode -and $ProcessExitCode -eq 0) { return 'runtime_warning_other' }
+        return 'runtime_error_other'
+    }
+
     if ($null -eq $ProcessExitCode -or $ProcessExitCode -eq 0) { return 'none' }
-    if ([string]::IsNullOrWhiteSpace($CapturedStderr)) { return 'runtime_error_no_stderr' }
-    if ($CapturedStderr -match '(?i)(PSArgumentException|FullyQualifiedErrorId\s*:\s*Argument,codex\.ps1|\[codex\.ps1\])') { return 'powershell_shim_error' }
-    if ($CapturedStderr -match '(?i)(unexpected argument|unknown argument|unrecognized option|invalid value.*--|usage:)') { return 'cli_argument_error' }
-    if ($CapturedStderr -match '(?i)(Not inside a trusted directory|skip-git-repo-check)') { return 'git_trust_error' }
-    if ($CapturedStderr -match '(?i)(401|403|unauthorized|forbidden|authentication|api key|credential|NIM_API_KEY)') { return 'auth_error' }
-    if ($CapturedStderr -match '(?i)(responses|request failed|http status|status code|429|500|502|503|504)') { return 'provider_request_error' }
-    return 'runtime_error_other'
+    return 'runtime_error_no_stderr'
 }
 
 function Get-SafeStderrSummary {
@@ -124,7 +131,7 @@ function Get-SafeStderrSummary {
     $safe = [regex]::Replace($safe, '\b[A-Za-z0-9_-]{48,}\b', '<token>')
     $safe = [regex]::Replace($safe, '[\r\n\t]+', ' ')
     $safe = [regex]::Replace($safe, '\s{2,}', ' ').Trim()
-    if ($safe.Length -gt 400) { $safe = $safe.Substring(0, 400) + '...' }
+    if ($safe.Length -gt 800) { $safe = $safe.Substring(0, 800) + '...' }
     if ([string]::IsNullOrWhiteSpace($safe)) { return 'redacted' }
     return $safe
 }
@@ -200,7 +207,7 @@ try {
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $task = 'Read only README.md from the current repository using the available repository or shell tools. Do not modify any file. Find the first non-empty line after the top-level heading. Reply exactly as README_TOOL_OK|<that exact line>, with no additional text.'
+    $task = 'Read only README.md from the current repository. Use exec_command exactly once. For that call, set cmd to "Get-Content -LiteralPath README.md -TotalCount 3" and set sandbox_permissions to "use_default". Omit justification, prefix_rule, additional_permissions, workdir, shell, tty, login, yield_time, and max-output fields. Do not request escalation. Do not modify any file. From the command output, find the first non-empty line after the top-level heading. Reply exactly as README_TOOL_OK|<that exact line>, with no additional text.'
     $process.StandardInput.WriteLine($task)
     $process.StandardInput.Close()
 
@@ -247,6 +254,9 @@ $agentMessagePresent = $agentMessages.Count -gt 0
 $agentMessageExact = $false
 if ($agentMessagePresent) { $agentMessageExact = ([string]$agentMessages[$agentMessages.Count - 1].item.text).Trim() -ceq $expectedAnswer }
 
+$invalidToolArgsSeen = $stderr -match '(?i)`justification` requires an explicit `sandbox_permissions`'
+$execCommandFailedSeen = $stderr -match '(?i)exec_command failed for'
+$windowsProcessFailureSeen = $stderr -match '(?i)(CreateProcess|Failed to create unified exec process|Unified exec process failed|ProcessFailed|CreateProcessAsUserW|helper[_ -].*error)'
 $credentialLeakDetected = $false
 if (-not [string]::IsNullOrEmpty($key)) { $credentialLeakDetected = $stdout.Contains($key) -or $stderr.Contains($key) }
 $failureClass = Get-SafeFailureClass -CapturedStderr $stderr -ProcessExitCode $exitCode
@@ -269,6 +279,8 @@ $overallPass = (
     $fileChangeItems.Count -eq 0 -and
     $workingTreeUnchanged -and
     $agentMessageExact -and
+    -not $invalidToolArgsSeen -and
+    -not $execCommandFailedSeen -and
     -not $credentialLeakDetected
 )
 
@@ -277,7 +289,8 @@ Write-Output "codex_version=$([string]$codexVersion)"
 Write-Output "codex_launcher=$($launchSpec.Kind)"
 Write-Output "codex_home=$codexHome"
 Write-Output 'config_mode=isolated-default'
-Write-Output 'harness_mode=repo-read'
+Write-Output 'harness_mode=repo-read-explicit-tool-contract'
+Write-Output 'tool_contract=exec_command-use_default-no-justification'
 Write-Output 'model=nvidia/nemotron-3-super-120b-a12b'
 Write-Output 'model_provider=nim'
 Write-Output 'sandbox=read-only'
@@ -288,6 +301,9 @@ Write-Output 'process_started=True'
 Write-Output "timed_out=$([bool]$timedOut)"
 Write-Output "process_exit_code=$exitCodeText"
 Write-Output "failure_class=$failureClass"
+Write-Output "invalid_tool_args_seen=$([bool]$invalidToolArgsSeen)"
+Write-Output "exec_command_failed_seen=$([bool]$execCommandFailedSeen)"
+Write-Output "windows_process_failure_seen=$([bool]$windowsProcessFailureSeen)"
 Write-Output "stderr_summary=$stderrSummary"
 Write-Output "jsonl_line_count=$($lines.Count)"
 Write-Output "jsonl_decode_errors=$decodeErrors"
