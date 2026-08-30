@@ -71,33 +71,35 @@ function New-ResponseJson {
     @{ info = $info; parts = $Parts } | ConvertTo-Json -Depth 16 -Compress
 }
 
-# Windows PowerShell 5.1 can behave differently when scriptblocks created with
-# GetNewClosure() are invoked across function/module scopes. Keep fake transport
-# state explicitly at script scope so protocol tests exercise the adapter rather
-# than closure/module visibility quirks.
+# Keep one request scriptblock in the test script's own session state. Windows
+# PowerShell 5.1 can change script/session-state lookup when a request scriptblock
+# is created inside a factory function and later invoked from protocol code.
 $script:DelegentFakeRoutes = @{}
+$script:DelegentLastFakeBody = $null
+$script:DelegentFakeRequest = {
+    param($Method, $Path, $BodyJson, $TimeoutSeconds)
+    if ($null -ne $BodyJson) { $script:DelegentLastFakeBody = $BodyJson }
+    $key = "$Method $Path"
+    $routes = $script:DelegentFakeRoutes
+    if (-not $routes.ContainsKey($key) -or $routes[$key].Count -eq 0) {
+        throw "Unexpected fake request: $key"
+    }
+    $item = $routes[$key].Dequeue()
+    if ($item -is [scriptblock]) { return & $item $Method $Path $BodyJson $TimeoutSeconds }
+    return [string]$item
+}
 
 function New-FakeRequest {
     param([hashtable]$Routes)
 
     $script:DelegentFakeRoutes = @{}
+    $script:DelegentLastFakeBody = $null
     foreach ($key in $Routes.Keys) {
         $queue = New-Object Collections.Queue
         foreach ($item in @($Routes[$key])) { $queue.Enqueue($item) }
         $script:DelegentFakeRoutes[$key] = $queue
     }
-
-    {
-        param($Method, $Path, $BodyJson, $TimeoutSeconds)
-        $key = "$Method $Path"
-        $routes = $script:DelegentFakeRoutes
-        if (-not $routes.ContainsKey($key) -or $routes[$key].Count -eq 0) {
-            throw "Unexpected fake request: $key"
-        }
-        $item = $routes[$key].Dequeue()
-        if ($item -is [scriptblock]) { return & $item $Method $Path $BodyJson $TimeoutSeconds }
-        return [string]$item
-    }
+    return $script:DelegentFakeRequest
 }
 
 function New-Invocation {
@@ -278,16 +280,13 @@ $tests['sensitive content excluded'] = {
 }
 
 $tests['message body has no format or agent'] = {
-    $script:DelegentCapturedBody = $null
-    $script:DelegentMessageBodyResponse = New-ResponseJson @((New-TerminalPart 'delegent_handoff' (New-NormalResult)))
-    $request = {
-        param($Method, $Path, $BodyJson, $TimeoutSeconds)
-        if ($Method -eq 'GET') { return '[]' }
-        $script:DelegentCapturedBody = ConvertFrom-Json $BodyJson
-        return $script:DelegentMessageBodyResponse
+    $response = New-ResponseJson @((New-TerminalPart 'delegent_handoff' (New-NormalResult)))
+    $request = New-FakeRequest @{
+        'GET /session/ses_body/message' = @('[]')
+        'POST /session/ses_body/message' = @($response)
     }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_body' 'build') $request
-    $capture = $script:DelegentCapturedBody
+    $capture = if ($script:DelegentLastFakeBody) { $script:DelegentLastFakeBody | ConvertFrom-Json } else { $null }
     Assert-True ($result.ExitCode -eq 0 -and $null -ne $capture -and $null -eq $capture.PSObject.Properties['format'] -and $null -eq $capture.PSObject.Properties['agent'] -and $capture.model.providerID -eq 'nvidia') "Unexpected result/body: $($result.Output)"
 }
 
