@@ -19,10 +19,12 @@ $script:DelegentDecisionToolFields = @(
 function Install-DelegentTerminalTools {
     param(
         [string]$SkillRoot,
-        [string]$ConfigRoot
+        [string]$ConfigDir
     )
 
-    $toolTarget = Join-Path $ConfigRoot 'opencode\tools'
+    # ConfigDir is an explicit OpenCode config directory (OPENCODE_CONFIG_DIR),
+    # so custom tools live directly under its documented tools/ child.
+    $toolTarget = Join-Path $ConfigDir 'tools'
     New-Item -ItemType Directory -Force -Path $toolTarget -ErrorAction Stop | Out-Null
     foreach ($toolName in @('delegent_handoff.ts', 'delegent_decision.ts')) {
         $source = Join-Path (Join-Path $SkillRoot 'tools') $toolName
