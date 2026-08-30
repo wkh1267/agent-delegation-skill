@@ -38,10 +38,11 @@ $env:XDG_DATA_HOME = Join-Path $runtime 'data'
 $env:XDG_CACHE_HOME = Join-Path $runtime 'cache'
 $env:XDG_STATE_HOME = Join-Path $runtime 'state'
 $env:OPENCODE_CONFIG = $null
-$env:OPENCODE_CONFIG_CONTENT = Get-Content -Raw (Join-Path $skillRoot 'opencode.json')
+$baseConfigPath = Join-Path $skillRoot 'opencode.json'
+$env:OPENCODE_CONFIG_CONTENT = Get-Content -Raw $baseConfigPath
 
 # `sessions` remains the wrapper-only OpenCode CLI path. Worker runs use the
-# structured session API below while preserving the documented wrapper flags.
+# session API below while preserving the documented wrapper flags.
 if ($args.Count -gt 0 -and $args[0] -eq 'sessions') {
     $sessionArgs = @()
     if ($args.Count -gt 1) {
@@ -51,7 +52,10 @@ if ($args.Count -gt 0 -and $args[0] -eq 'sessions') {
     exit $LASTEXITCODE
 }
 
+# Keep the mature parsing/process/session helpers from Phase A, then override
+# only the Worker terminal-result transport with the normal-tool implementation.
 . (Join-Path $PSScriptRoot 'worker-protocol.ps1')
+. (Join-Path $PSScriptRoot 'worker-terminal-protocol.ps1')
 
 try {
     $invocation = Get-DelegentWorkerInvocation $args
@@ -65,6 +69,33 @@ catch {
 $workingDirectory = if ($invocation.Dir) { $invocation.Dir } else { (Get-Location).Path }
 try {
     $workingDirectory = (Resolve-Path -LiteralPath $workingDirectory -ErrorAction Stop).Path
+}
+catch {
+    $result = New-DelegentProtocolError -Kind runtime_output_error
+    Write-Output $result.Output
+    exit $result.ExitCode
+}
+
+try {
+    # OpenCode 1.18.x has a live bug where supplying `agent` on
+    # POST /session/:id/message can fail. Preserve the wrapper's --agent contract
+    # by selecting the requested default agent in this invocation's isolated
+    # server config instead of putting `agent` in the message body.
+    $config = Get-Content -Raw $baseConfigPath | ConvertFrom-Json -ErrorAction Stop
+    if ($invocation.Agent) { $config.default_agent = [string]$invocation.Agent }
+    $env:OPENCODE_CONFIG_CONTENT = $config | ConvertTo-Json -Depth 32 -Compress
+
+    # Install only Delegent-owned, side-effect-free terminal tools into the
+    # wrapper-controlled OpenCode config root. Target repositories remain clean.
+    $toolTarget = Join-Path $env:XDG_CONFIG_HOME 'opencode\tools'
+    New-Item -ItemType Directory -Force -Path $toolTarget -ErrorAction Stop | Out-Null
+    foreach ($toolName in @('delegent_handoff.ts', 'delegent_decision.ts')) {
+        $source = Join-Path (Join-Path $skillRoot 'tools') $toolName
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw 'Missing Delegent terminal tool.'
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $toolTarget $toolName) -Force -ErrorAction Stop
+    }
 }
 catch {
     $result = New-DelegentProtocolError -Kind runtime_output_error
