@@ -27,6 +27,10 @@ try {
     Assert-True ($wrapper -match 'OPENCODE_CONFIG_DIR') 'Wrapper must set an explicit OpenCode config directory.'
     Assert-True ($wrapper -match 'Install-DelegentTerminalTools') 'Wrapper must use the shared terminal tool installer.'
     Assert-True ($wrapper -notmatch "XDG_CONFIG_HOME\s+'opencode\\\\tools'") 'Wrapper must not infer terminal discovery from XDG_CONFIG_HOME.'
+    Assert-True ($wrapper -match 'DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS') 'Wrapper must expose a bounded cold-bootstrap timeout override.'
+    Assert-True ($wrapper -match '\$bootstrapTimeoutSeconds\s*=\s*60') 'Cold terminal-tool bootstrap must have a bounded default window.'
+    Assert-True ($wrapper -match 'terminal_tool_bootstrap_timeout') 'Bootstrap timeout must have a deterministic protocol error.'
+    Assert-True ($wrapper -match 'terminal_tool_catalog_error') 'Catalog failure must have a deterministic protocol error.'
 
     Write-Output 'PASS explicit terminal tool discovery config'
     exit 0
