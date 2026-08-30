@@ -42,20 +42,25 @@ function Get-CodexLaunchSpec {
         }
     }
 
+    # npm installs both codex.cmd and codex.ps1 on Windows. Prefer the cmd shim
+    # for redirected-stdin exec probes: Windows PowerShell 5.1 can reject the
+    # trailing '-' sentinel before the npm PowerShell shim reaches Codex.
+    $cmdShim = Get-Command codex.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmdShim) {
+        $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+        return [pscustomobject]@{
+            VersionCommand = $cmdShim.Source
+            FileName = $comspec
+            ArgumentsPrefix = ('/d /s /c ""' + $cmdShim.Source + '" ')
+            ArgumentsSuffix = '"'
+            Kind = 'cmd-shim'
+        }
+    }
+
     $command = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $command) { return $null }
 
     $extension = [IO.Path]::GetExtension([string]$command.Source).ToLowerInvariant()
-    if ($extension -eq '.ps1') {
-        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
-        return [pscustomobject]@{
-            VersionCommand = $command.Source
-            FileName = $powershell.Source
-            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
-            ArgumentsSuffix = ''
-            Kind = 'powershell-shim'
-        }
-    }
     if ($extension -eq '.cmd' -or $extension -eq '.bat') {
         $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
         return [pscustomobject]@{
@@ -64,6 +69,16 @@ function Get-CodexLaunchSpec {
             ArgumentsPrefix = ('/d /s /c ""' + $command.Source + '" ')
             ArgumentsSuffix = '"'
             Kind = 'cmd-shim'
+        }
+    }
+    if ($extension -eq '.ps1') {
+        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $powershell.Source
+            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
+            ArgumentsSuffix = ''
+            Kind = 'powershell-shim-fallback'
         }
     }
 
@@ -85,6 +100,9 @@ function Get-SafeFailureClass {
     if ($null -eq $ProcessExitCode -or $ProcessExitCode -eq 0) { return 'none' }
     if ([string]::IsNullOrWhiteSpace($CapturedStderr)) { return 'startup_error_no_stderr' }
 
+    if ($CapturedStderr -match '(?i)(PSArgumentException|FullyQualifiedErrorId\s*:\s*Argument,codex\.ps1|\[codex\.ps1\])') {
+        return 'powershell_shim_error'
+    }
     if ($CapturedStderr -match '(?i)(unexpected argument|unknown argument|unrecognized option|invalid value.*--|usage:)') {
         return 'cli_argument_error'
     }
@@ -125,9 +143,6 @@ function Get-SafeStderrSummary {
         $safe = $safe.Replace($Credential, '<redacted>')
     }
 
-    # Strip secret-like values and user-specific locations before exposing a
-    # bounded diagnostic fragment. Keep only the semantic error text needed to
-    # identify the failing Codex startup branch.
     $safe = [regex]::Replace($safe, '(?i)nvapi-[A-Za-z0-9_-]+', '<redacted>')
     $safe = [regex]::Replace($safe, '(?i)\bBearer\s+\S+', 'Bearer <redacted>')
     $safe = [regex]::Replace($safe, '(?i)\b(?:sk|key|token)-[A-Za-z0-9_-]{12,}', '<redacted>')
@@ -201,10 +216,6 @@ try {
     $env:CODEX_HOME = $codexHome
     $env:NIM_API_KEY = $key
 
-    # N2b deliberately uses the smallest headless surface that can prove a
-    # Codex -> NIM -> Nemotron turn. Strict config, explicit sandboxing,
-    # ephemeral persistence, and rule suppression are hardened independently
-    # only after this minimal harness passes.
     $codexArgs = 'exec --json -'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $launchSpec.FileName
