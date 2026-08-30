@@ -1,21 +1,37 @@
 # Delegent V0.1 Next-Test Plan
 
-This document is the current validation order after the OpenCode 1.18.25 terminal-tool investigation and the decision to evaluate Codex CLI as the preferred NVIDIA NIM Worker harness.
+This document is the current validation source of truth for the Delegent V0.1 Worker-runtime evaluation.
 
 See also:
 
 - `docs/decisions/0001-codex-nim-worker-runtime.md`
 - `evals/codex-nim-harness-plan.md`
+- `evals/v0.1-smoke.md`
 
 ## Current decision
 
 Delegent remains workflow-agnostic and Worker-runtime-agnostic.
 
-The core Lead/Worker architecture, Context Firewall, Worker continuity policy, handoff schema, escalation boundary, and Lead final acceptance remain accepted.
+The accepted architecture remains:
 
-OpenCode is no longer assumed to be the required Worker runtime. It is retained as a frozen baseline/fallback while Codex harness + NVIDIA NIM is evaluated.
+```text
+Codex Lead / GPT-5.6 Sol
+        |
+        v
+Delegent placement + Context Firewall
+        |
+        v
+Worker adapter
+        |
+        v
+long-context execution Worker
+```
 
-Do **not** continue adding OpenCode-specific lifecycle/plugin workarounds as the next activity.
+Lead/Worker ownership, persistent-vs-fresh Worker policy, compact handoff, decision escalation, sensitive filtering, and Lead final acceptance remain unchanged.
+
+OpenCode is retained as a frozen baseline/fallback. Do **not** add more OpenCode-specific lifecycle/plugin workarounds as the next activity.
+
+Codex harness + NVIDIA NIM is now the preferred Worker-runtime candidate under validation.
 
 ## Current validation order
 
@@ -28,8 +44,8 @@ A.7 OpenCode live terminal handoff                      PAUSED / runtime-specifi
 N0  Codex/NIM baseline + isolated CODEX_HOME            PASS
 N1  Hosted NIM Responses compatibility                  PASS
 N2a Codex config/auth/provider doctor                    PASS
-N2b Minimal `codex exec` Nemotron Worker                NEXT
-N3  Real Codex repository tool use
+N2b Minimal `codex exec` Nemotron Worker                PASS
+N3  Real Codex repository tool use                      NEXT
 N4  Deterministic terminal handoff via --output-schema
 N5  Codex Worker session resume / continuity
 N6  Controlled mutation + verifier
@@ -45,7 +61,7 @@ Do not skip a blocked layer.
 
 ## What the OpenCode work proved
 
-The OpenCode path was valuable and should not be treated as failed work.
+The OpenCode path remains useful evidence rather than failed work.
 
 Validated facts include:
 
@@ -62,92 +78,17 @@ bounded process/session cleanup                PASS
 Windows PowerShell 5.1 fake protocol suite     PASS 18/18
 ```
 
-The original `format: json_schema` approach failed specifically in the OpenCode structured-output integration path.
+The original `format: json_schema` approach failed in OpenCode's structured-output integration. The normal-tool replacement then exposed OpenCode-specific custom-tool discovery/plugin/readiness complexity. A zero-inference diagnostic proved the Delegent plugin and both terminal tools can register correctly while the production A.7 path still reports `terminal_tools_unavailable`.
 
-The replacement normal-tool approach then exposed repeated OpenCode-specific custom-tool discovery/plugin/readiness complexity. A zero-inference diagnostic proved that the configured Delegent plugin can appear in effective config and ToolRegistry with both terminal tools registered, while the production A.7 path still returned `terminal_tools_unavailable`.
+That is recorded as an OpenCode runtime-specific reliability blocker, not a NIM, Nemotron, or Delegent protocol failure.
 
-The latest OpenCode A.7 result is therefore recorded as a **runtime-specific reliability blocker**, not evidence that Delegent's protocol or NIM/Nemotron tool calling is invalid.
+## Codex/NIM live evidence — 2026-08-31
 
-## Why Codex harness is the preferred next candidate
+### N0 — isolated Worker home — PASS
 
-The target is:
+`evals/setup-codex-nim.ps1` creates a dedicated Worker-only `CODEX_HOME` and does not modify the user's normal Codex configuration.
 
-```text
-Codex Lead / GPT-5.6 Sol
-        |
-        v
-Delegent placement
-        |
-        v
-Dedicated isolated Codex Worker harness
-        |
-        v
-NVIDIA NIM / Nemotron
-```
-
-The dedicated Worker uses its own isolated `CODEX_HOME`. Because that home exists only for the NIM Worker, its base `config.toml` directly selects the Nemotron model and `nim` provider. A separate Codex profile is unnecessary and is no longer part of the N2 design.
-
-This reuses Codex's existing headless `exec` mode, repository tools, sandboxing, JSONL event stream, final output schema support, persisted sessions/resume, and process/tool orchestration.
-
-NVIDIA documents Codex CLI integration with NIM through a custom provider using `wire_api = "responses"`.
-
-## N0/N1 live evidence — 2026-08-31
-
-The actual local Codex installation and actual NVIDIA Developer hosted endpoint were tested.
-
-### N0 PASS
-
-```text
-codex_version=codex-cli 0.151.0
-codex_home=C:\Users\wkh12\AppData\Local\agent-delegation-skills\codex-nim\codex-home
-base_url=https://integrate.api.nvidia.com/v1
-model=nvidia/nemotron-3-super-120b-a12b
-config_written=True
-credential_value_logged=False
-```
-
-The setup is isolated from the user's normal Codex config and writes no credential value.
-
-### N1 PASS
-
-The actual hosted endpoint `https://integrate.api.nvidia.com/v1/responses` returned:
-
-```text
-basic_request=ok
-basic_http_status=200
-basic_decode=ok
-basic_output_shape=True
-
-tool_request=ok
-tool_http_status=200
-tool_decode=ok
-function_call_present=True
-function_name_match=True
-call_id_present=True
-arguments_valid=True
-
-overall=PASS
-credential_value_logged=False
-```
-
-This proves the hosted Developer endpoint currently provides the core Responses semantics Codex requires for this Worker candidate:
-
-```text
-/v1/responses          PASS
-auto function calling  PASS
-function call_id        PASS
-function arguments      PASS
-```
-
-Do not build a Responses compatibility proxy unless a later Codex-specific request shape exposes a bounded incompatibility.
-
-## Codex/NIM acceptance summary
-
-### N0 — isolation — PASS
-
-The isolated `CODEX_HOME` setup is implemented in `evals/setup-codex-nim.ps1`.
-
-The current setup writes one dedicated Worker config:
+Current generated config:
 
 ```toml
 model = "nvidia/nemotron-3-super-120b-a12b"
@@ -160,21 +101,57 @@ env_key = "NIM_API_KEY"
 wire_api = "responses"
 ```
 
-Earlier experiments generated `nim-worker.config.toml`; current setup removes that stale generated file so profile state cannot affect N2.
+Observed:
 
-### N1 — hosted Responses compatibility — PASS
+```text
+codex_version=codex-cli 0.151.0
+config_mode=isolated-default
+config_written=True
+credential_value_logged=False
+```
 
-The secret-safe live probe is implemented in `evals/probe-nim-responses.ps1`.
+A separate Codex profile is intentionally not used. The dedicated Worker home directly selects the Worker model/provider so `doctor` and `exec` share the same effective configuration.
+
+### N1 — hosted Responses API — PASS
+
+`evals/probe-nim-responses.ps1` tested the actual NVIDIA Developer hosted endpoint:
+
+```text
+https://integrate.api.nvidia.com/v1/responses
+```
+
+Observed:
+
+```text
+basic_http_status=200
+basic_output_shape=True
+tool_http_status=200
+function_call_present=True
+function_name_match=True
+call_id_present=True
+arguments_valid=True
+overall=PASS
+credential_value_logged=False
+```
+
+Therefore the hosted endpoint currently supplies the key Codex wire primitives:
+
+```text
+/v1/responses          PASS
+auto function calling  PASS
+function call_id        PASS
+function arguments      PASS
+```
+
+Do not build a Responses compatibility proxy unless a later Codex request shape proves one is necessary.
 
 ### N2a — zero-inference Codex doctor — PASS
 
-The dedicated isolated Worker config was validated with `evals/diagnose-codex-nim-doctor.ps1` on the actual local Codex installation.
+`evals/diagnose-codex-nim-doctor.ps1` validated the same dedicated Worker config without model inference.
 
-Live evidence on Codex CLI 0.151.0:
+Observed:
 
 ```text
-config_file_exists=True
-config_mode=isolated-default
 doctor_exit_code=0
 doctor_decode_ok=True
 config_status=ok
@@ -186,34 +163,19 @@ model_selected=True
 auth_status=ok
 provider_env_present=True
 reachability_status=ok
-stderr_present=False
-credential_leak_detected=False
 overall=PASS
 model_inference_used=false
 credential_value_logged=False
 ```
 
-This proves the remaining N2 uncertainty is **not** base config loading, model selection, provider selection, provider credential discovery, or provider reachability.
+This proves config loading, model selection, provider selection, credential discovery, and provider reachability.
 
-If `codex exec` still exits before `thread.started`, the remaining fault surface is the exec-only bootstrap path such as execpolicy/login restriction handling, local state/environment initialization, or in-process app-server/thread startup.
+### N2b — minimal `codex exec` — PASS
 
-### N2b — minimal `codex exec` — NEXT
-
-Use `evals/run-codex-nim-smoke.ps1`.
-
-The first two live N2 attempts exited before `thread.started` with exit code 1 and no JSONL output. Those attempts predated the dedicated-base-config simplification and therefore should not be treated as evidence against the current N2 design.
-
-Exact Codex 0.151.0 source confirms the N2 exec flags used by the smoke are valid: `--strict-config`, `--ephemeral`, `--json`, `--sandbox`, and `--ignore-rules` are all supported.
-
-The current smoke runs the equivalent of:
+`evals/run-codex-nim-smoke.ps1` now uses the minimal proven harness:
 
 ```text
-codex exec
---strict-config
---ephemeral
---json
---sandbox read-only
---ignore-rules
+codex exec --json -
 ```
 
 with stdin task:
@@ -222,7 +184,82 @@ with stdin task:
 Reply with exactly WORKER_OK.
 ```
 
-PASS requires:
+Live result:
+
+```text
+codex_version=codex-cli 0.151.0
+codex_launcher=cmd-shim
+harness_mode=minimal
+process_exit_code=0
+failure_class=none
+stderr_summary=none
+jsonl_line_count=5
+jsonl_decode_errors=0
+event_types=thread.started,item.completed,turn.started,turn.completed
+thread_id_present=True
+turn_completed=True
+turn_failed=False
+agent_message_present=True
+agent_message_exact=True
+credential_leak_detected=False
+overall=PASS
+credential_value_logged=False
+```
+
+This proves, on the actual Windows machine and actual hosted NVIDIA endpoint:
+
+```text
+Codex CLI headless harness      PASS
+custom NIM model provider       PASS
+hosted NVIDIA Responses         PASS
+Nemotron real model turn        PASS
+Codex thread lifecycle          PASS
+Codex JSONL machine stream      PASS
+```
+
+#### N2 root cause record
+
+Earlier N2 runs returned exit code 1, zero JSONL lines, and no `thread.started`. A sanitized stderr probe eventually showed:
+
+```text
+[codex.ps1] ... PSArgumentException
+```
+
+The failure occurred in the npm PowerShell shim before Codex's Rust runtime received the command. It was specifically exposed by Windows PowerShell 5.1 + redirected stdin + the `-` stdin sentinel.
+
+The launcher now prefers:
+
+```text
+codex.exe
+-> codex.cmd
+-> codex.ps1 only as fallback
+```
+
+The passing live run used:
+
+```text
+codex_launcher=cmd-shim
+```
+
+Therefore the earlier N2 failures must **not** be interpreted as Codex/NIM runtime incompatibility.
+
+## N3 — real repository tool use — NEXT
+
+Use:
+
+```text
+evals/run-codex-nim-repo-read.ps1
+```
+
+N3 deliberately adds only the first required hardening/tool surface to the proven N2 harness:
+
+```text
+codex exec --json --sandbox read-only -
+```
+
+The Worker is instructed to read `README.md` using available repository/shell tools and return the first non-empty line after the top-level heading. The prompt does **not** contain the expected line.
+
+PASS requires all of the following:
 
 ```text
 process exit code 0
@@ -230,21 +267,22 @@ parseable JSONL
 thread.started with thread_id
 turn.completed
 no turn.failed/error
-exact final agent message WORKER_OK
+at least one completed command_execution
+at least one successful command_execution whose command references README.md
+zero file_change items
+working tree identical before and after the Worker turn
+exact final evidence:
+  README_TOOL_OK|Context-aware coding-agent orchestration for Codex.
 no credential leakage
 ```
 
-The smoke handles native Codex executables and Windows npm PowerShell/CMD shims and bounds the process tree on timeout.
+This gate proves that Nemotron is not merely answering through Codex; it can actually use Codex's repository execution path under a read-only sandbox while preserving the tree.
 
-### N3 — repository tools
+## N4 — deterministic terminal handoff
 
-After N2 passes, use the same isolated Worker config under read-only sandbox and require Nemotron to inspect `README.md` through Codex's real repository/tool path without modifying the tree.
+After N3 passes, evaluate Codex-native `--output-schema` as the machine boundary.
 
-### N4 — terminal handoff
-
-Prefer Codex-native `--output-schema` for the final machine boundary.
-
-The normal handoff remains exactly:
+Normal handoff remains exactly:
 
 ```text
 status
@@ -257,19 +295,38 @@ decisions_needed
 review_targets
 ```
 
-The adapter still performs exact validation and sensitive filtering. Prompt-only JSON is not an acceptable silent fallback.
+Decision escalation remains exactly:
 
-### N5 — continuity
+```text
+kind
+question
+evidence
+options
+recommendation
+confidence
+```
 
-Map stable Delegent Worker identity to Codex session/thread identity and validate `codex exec resume` for related follow-up. Independent review remains fresh-session work.
+The adapter must still perform exact validation and sensitive filtering. Prompt-only JSON is not an acceptable silent fallback.
 
-### N6 — controlled mutation
+## N5 — Worker continuity
 
-Use the repository-local fixture/verifier. Scope, architecture, security, and final acceptance remain Lead-owned.
+Map stable Delegent Worker identity to Codex thread identity and validate `codex exec resume` for related work.
 
-### N7 — adapter
+```text
+same subsystem / follow-up / implement->test->debug
+  -> reuse
 
-Only after standalone N0-N6 pass, implement the production candidate such as:
+independent review / security / spec compliance
+  -> fresh
+```
+
+## N6 — controlled mutation
+
+Use the repository-local fixture/verifier under a controlled write sandbox. Scope, architecture, security-sensitive adapter changes, and final acceptance remain Lead-owned.
+
+## N7 — production candidate adapter
+
+Only after N0-N6 pass, implement the production candidate, e.g.:
 
 ```text
 skills/delegating-work/scripts/codex-nim-worker.ps1
@@ -277,34 +334,41 @@ skills/delegating-work/schemas/delegent-handoff.schema.json
 skills/delegating-work/schemas/delegent-decision.schema.json
 ```
 
-Do not reimplement Codex's tool loop, repo tools, sandbox, or session storage.
+Do not reimplement Codex's tool loop, repository tools, sandbox, or session storage.
 
-### N8 — runtime bake-off
+## N8 — runtime bake-off
 
-Compare OpenCode baseline and Codex/NIM on the same controlled Worker tasks. Correctness and protocol reliability dominate small latency differences.
+Compare the frozen OpenCode baseline and Codex/NIM on the same controlled Worker tasks. Correctness and protocol reliability dominate small latency differences.
 
-### N9 — controlled Delegent composition
+## N9 — controlled Delegent composition
 
 Run the existing B1/B2 intent:
 
 ```text
-B1 trivial task -> Lead may keep locally
-B2 context-heavy task -> Codex/NIM Worker -> validated handoff -> Lead acceptance
+B1 trivial task
+  -> Lead may keep locally
+
+B2 context-heavy task
+  -> Codex/NIM Worker
+  -> validated compact handoff
+  -> Lead review / acceptance
 ```
 
-Codex/NIM becomes the V0.1 preferred Worker runtime only after B2/N9 passes.
+Codex/NIM becomes the preferred V0.1 Worker runtime only after this composition gate passes.
 
 ## Runtime pivot rule
 
+Current status:
+
 ```text
 Delegent core      = accepted
-Codex+NIM runtime  = preferred candidate under test
+Codex+NIM runtime  = preferred candidate; N2 proven, N3 next
 OpenCode runtime   = frozen baseline/fallback
 ```
 
 Do not delete the OpenCode adapter until at least one realistic ticket/spec task passes on the selected replacement runtime.
 
-If Codex+NIM fails for a structural reason rather than a small compatibility issue, next candidate order is:
+If Codex+NIM later fails for a structural reason rather than a bounded compatibility issue, candidate order remains:
 
 ```text
 Direct minimal NIM runtime
@@ -322,18 +386,18 @@ tdd
 code-review
 ```
 
-The selected workflow owns what must happen. Delegent owns where significant work lives, continuity, escalation, Context Firewall enforcement, and Lead final acceptance.
+The selected workflow owns what must happen. Delegent owns placement, continuity, escalation, Context Firewall enforcement, and Lead final acceptance.
 
 ## Phase D — realistic ticket/spec development
 
-After Phase C passes, run a normal ticket/spec-driven task. This is the first layer treated as realistic product usage rather than a controlled runtime evaluation.
+After Phase C passes, run a normal ticket/spec-driven task. This is the first layer treated as realistic product usage rather than controlled runtime evaluation.
 
 ## Security preflight
 
 Before any real Worker call:
 
 1. credential exists only in the intended ignored secret location/environment;
-2. working tree is clean;
+2. working tree is clean or its baseline is explicitly captured;
 3. credential residue scan is clean;
 4. runtime adapter code remains Lead-owned for mutation/review;
 5. stderr/logging is not merged into the machine protocol stream;
@@ -343,10 +407,11 @@ Before any real Worker call:
 
 Do not run another OpenCode A.7.
 
-The zero-inference Codex doctor gate has passed. Run N2b now:
+N2b has passed. Run N3:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\run-codex-nim-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-codex-nim-repo-read.ps1
 ```
 
-If N2 passes, proceed immediately to a separate N3 read-only README tool-use probe. Do not integrate the Codex runtime into `$delegent` routing before N3/N4/N5/N6 are validated.
+Do not integrate Codex/NIM into `$delegent` routing yet. N3, N4, N5, and N6 must pass first.
