@@ -16,7 +16,9 @@ Assert-True ($errors.Count -eq 0) 'N2 smoke script must parse under Windows Powe
 
 $smoke = Get-Content -Raw -LiteralPath $smokePath
 Assert-True ($smoke -match 'CODEX_HOME') 'N2 smoke must use isolated CODEX_HOME.'
-Assert-True ($smoke -match 'setup-codex-nim\.ps1') 'N2 smoke must regenerate the isolated NIM profile.'
+Assert-True ($smoke -match 'setup-codex-nim\.ps1') 'N2 smoke must regenerate the isolated NIM provider/profile.'
+Assert-True ($smoke -match 'nim-worker\.config\.toml') 'N2 smoke must require the Codex Profile V2 layer.'
+Assert-True ($smoke -match 'profile_format=v2-layer') 'N2 smoke output must identify Profile V2.'
 Assert-True ($smoke -match 'exec --strict-config -p nim-worker --ephemeral --json --sandbox read-only --ignore-rules -') 'N2 smoke must use the bounded read-only ephemeral JSONL Codex exec surface.'
 Assert-True ($smoke -match 'Reply with exactly WORKER_OK\.') 'N2 smoke must use the deterministic WORKER_OK task.'
 Assert-True ($smoke -match "type -eq 'thread\.started'") 'N2 smoke must require a thread.started event.'
@@ -26,6 +28,7 @@ Assert-True ($smoke -match "-ceq 'WORKER_OK'") 'N2 smoke must require the exact 
 Assert-True ($smoke -match 'ReadToEndAsync') 'N2 smoke must drain stdout and stderr without pipe deadlock.'
 Assert-True ($smoke -match 'taskkill\.exe /PID \$process\.Id /T /F') 'N2 smoke must bound and clean up the Codex process tree.'
 Assert-True ($smoke -match "extension -eq '\.ps1'" -and $smoke -match "extension -eq '\.cmd'") 'N2 smoke must support Windows Codex shims as well as native executables.'
+Assert-True ($smoke -match 'Get-SafeFailureClass' -and $smoke -match 'failure_class=') 'N2 smoke must classify pre-thread failures without printing raw stderr.'
 Assert-True ($smoke -match 'stdout\.Contains\(\$key\)' -and $smoke -match 'stderr\.Contains\(\$key\)') 'N2 smoke must fail if the credential appears in captured process output.'
 Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N2 smoke must not print raw process streams or credential values.'
 Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 smoke must not contain a NVIDIA credential literal.'
