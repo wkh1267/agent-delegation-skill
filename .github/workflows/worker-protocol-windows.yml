@@ -15,10 +15,19 @@ jobs:
         shell: powershell
         run: |
           $PSVersionTable.PSVersion
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-worker-protocol.ps1
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-terminal-tool-catalog.ps1
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-terminal-tool-discovery-config.ps1
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-codex-nim-bootstrap.ps1
+          function Invoke-TestScript {
+            param([string]$Path)
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $Path
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Path failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          Invoke-TestScript .\evals\test-worker-protocol.ps1
+          Invoke-TestScript .\evals\test-terminal-tool-catalog.ps1
+          Invoke-TestScript .\evals\test-terminal-tool-discovery-config.ps1
+          Invoke-TestScript .\evals\test-codex-nim-bootstrap.ps1
+
           $tokens = $null
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\evals\diagnose-terminal-plugin.ps1), [ref]$tokens, [ref]$errors)
