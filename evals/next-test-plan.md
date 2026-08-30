@@ -1,203 +1,200 @@
 # Delegent V0.1 Next-Test Plan
 
-This document records the validation order after the first direct-Worker/full-Delegent smoke runs and the live OpenCode compatibility probes.
+This document is the current validation order after the OpenCode 1.18.25 terminal-tool investigation and the decision to evaluate Codex CLI as the preferred NVIDIA NIM Worker harness.
 
-## Decision record
+See also:
 
-Delegent remains workflow-agnostic. Matt Pocock's `implement` workflow is a later real-world integration target, not a runtime dependency. Do not install or exercise it until the controlled runtime/composition layers pass.
+- `docs/decisions/0001-codex-nim-worker-runtime.md`
+- `evals/codex-nim-harness-plan.md`
 
-## Validation layers
+## Current decision
+
+Delegent remains workflow-agnostic and Worker-runtime-agnostic.
+
+The core Lead/Worker architecture, Context Firewall, Worker continuity policy, handoff schema, escalation boundary, and Lead final acceptance remain accepted.
+
+OpenCode is no longer assumed to be the required Worker runtime. It is retained as a frozen baseline/fallback while Codex harness + NVIDIA NIM is evaluated.
+
+Do **not** continue adding OpenCode-specific lifecycle/plugin workarounds as the next activity. The next experiment is the isolated Codex+NIM compatibility spike.
+
+## Current validation order
 
 ```text
-A. Worker protocol — fake/local                         PASS (initial structured design)
-A.5 Live compatibility isolation                       PASS/isolated blocker
-A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 + catalog/discovery invariants)
-A.7 Live terminal-tool Worker probe                    BLOCKED (custom-tool discovery fix pending live recheck)
-B. Controlled Delegent composition                     WAITING ON A.7
-   B1 trivial Lead-owned routing
-   B2 controlled delegated routing
-C. Matt implement integration (+ tdd/code-review)
-D. Real ticket/spec development
+A.  Delegent protocol foundation                         PASS
+A.5 OpenCode/NIM compatibility isolation                PASS / blocker isolated
+A.6 Terminal protocol fake/local validation             PASS
+A.7 OpenCode live terminal handoff                      PAUSED / runtime-specific blocker
+
+N0  Codex/NIM baseline + isolated CODEX_HOME            NEXT
+N1  Hosted NIM Responses compatibility
+N2  Minimal `codex exec` Nemotron Worker
+N3  Real Codex repository tool use
+N4  Deterministic terminal handoff via --output-schema
+N5  Codex Worker session resume / continuity
+N6  Controlled mutation + verifier
+N7  Production-candidate Codex/NIM adapter
+N8  OpenCode vs Codex/NIM runtime bake-off
+N9  Controlled Delegent composition (B1/B2 equivalent)
+
+C.  Matt implement integration (+ tdd/code-review)      WAITING ON N9
+D.  Real ticket/spec development                        WAITING ON C
 ```
 
 Do not skip a blocked layer.
 
-## Phase A — local protocol foundation
+## What the OpenCode work proved
 
-The first implementation passed 14 fake-only cases plus AST/diff/credential/process-lifecycle checks. It established the authenticated loopback OpenCode server, bounded session API handling, persisted-session recovery, credential isolation, and deterministic `WORKER_PROTOCOL_ERROR` behavior.
+The OpenCode path was valuable and should not be treated as failed work.
 
-The original terminal representation used OpenCode `format: json_schema`.
-
-## Phase A.5 — live compatibility isolation
-
-Live probes on OpenCode 1.18.25 established:
+Validated facts include:
 
 ```text
-preflight / clean branch                         PASS
-opencode serve + health + Basic Auth             PASS
-session creation                                 PASS
-plain OpenCode/Nemotron plan Worker              PASS
-README read tool                                 PASS
-direct NVIDIA Nemotron inference                 PASS
-direct forced named StructuredOutput tool call  PASS
-OpenCode format=json_schema message path         FAIL
+NVIDIA NIM API connectivity                    PASS
+Nemotron inference                             PASS
+Nemotron normal tool calling                   PASS
+Nemotron forced named tool calling             PASS
+OpenCode plain plan/read Worker                PASS
+OpenCode session creation/reuse                PASS
+Delegent exact terminal validator              PASS
+Context Firewall sensitive filtering           PASS
+bounded process/session cleanup                PASS
+Windows PowerShell 5.1 fake protocol suite     PASS 18/18
 ```
 
-Removing the HTTP message `agent` field did not fix the failure. Therefore the active blocker is OpenCode's special structured-output integration path, not the NVIDIA key, basic NIM connectivity, Nemotron inference, or Nemotron's named tool-calling capability.
+The original `format: json_schema` approach failed specifically in the OpenCode structured-output integration path.
 
-## Phase A.6 — terminal custom-tool protocol
+The replacement normal-tool approach then exposed repeated OpenCode-specific custom-tool discovery/plugin/readiness complexity. A zero-inference diagnostic proved that the configured Delegent plugin can appear in effective config and ToolRegistry with both terminal tools registered, while the production A.7 path still returned `terminal_tools_unavailable`.
 
-The broken special `format: json_schema` transport was replaced with normal OpenCode custom tools:
+The latest OpenCode A.7 result is therefore recorded as a **runtime-specific reliability blocker**, not evidence that Delegent's protocol or NIM/Nemotron tool calling is invalid.
+
+## Why Codex harness is the preferred next candidate
+
+The target is:
 
 ```text
-delegent_handoff
-  status
-  summary
-  evidence
-  changes
-  tests
-  risks
-  decisions_needed
-  review_targets
-
-delegent_decision
-  question
-  evidence
-  options
-  recommendation
-  confidence
+Codex Lead / GPT-5.6 Sol
+        |
+        v
+Delegent placement
+        |
+        v
+codex exec -p nim-worker
+        |
+        v
+NVIDIA NIM / Nemotron
 ```
 
-The tools are side-effect free and are installed only into the wrapper-controlled OpenCode config directory. The adapter reads only `parts[].state.input` for exactly one terminal Delegent tool call.
+This reuses Codex's existing:
 
-Deterministic acceptance covers:
+- headless `exec` mode;
+- repository tools;
+- sandboxing;
+- JSONL event stream;
+- final output schema support;
+- persisted sessions and `resume`;
+- process/tool orchestration.
 
-- valid handoff;
-- valid decision escalation;
-- ordinary trajectory exclusion;
-- missing terminal call;
-- missing/extra arguments;
-- duplicate terminal call;
-- handoff + decision conflict;
-- runtime/API failure;
-- bounded timeout/abort;
-- persisted-session recovery;
-- stale reused-session call rejection;
-- credential/sensitive-value filtering;
-- terminal-tool runtime installation;
-- no `format: json_schema` or direct `agent` field in Worker message body;
-- wrapper flag/session compatibility;
-- server lifecycle cleanup;
-- terminal-tool catalog validation and deterministic unavailable-tool error;
-- explicit `OPENCODE_CONFIG_DIR` discovery path regression.
+It therefore has the potential to reduce the amount of runtime-specific code Delegent must own.
 
-Current Windows PowerShell 5.1 CI:
+NVIDIA documents Codex CLI integration with NIM through a custom provider using `wire_api = "responses"`.
+
+## Codex/NIM acceptance summary
+
+The detailed commands and decision branches live in `evals/codex-nim-harness-plan.md`.
+
+### N0 — isolation
+
+PASS requires an isolated Delegent-controlled `CODEX_HOME`; the user's normal Codex config is not modified and no credential is written to tracked files.
+
+### N1 — hosted Responses compatibility
+
+Test the actual NVIDIA Developer hosted endpoint used by the project. Do not infer hosted `/v1/responses` support from self-hosted NIM documentation.
+
+If Responses is unavailable, evaluate a small compatibility adapter only if the required mapping is bounded. Do not build a second full agent runtime by accident.
+
+### N2 — minimal `codex exec`
+
+A real Nemotron turn must complete through the custom NIM provider with parseable JSONL and no secret leakage.
+
+### N3 — repository tools
+
+Under read-only sandbox, Nemotron must use Codex's real repository tools to inspect `README.md` without modifying the tree.
+
+### N4 — terminal handoff
+
+Prefer Codex-native `--output-schema` for the final machine boundary.
+
+The normal handoff remains exactly:
 
 ```text
-PASS 18/18
-PASS 3/3 catalog invariant
-PASS explicit terminal tool discovery config
+status
+summary
+evidence
+changes
+tests
+risks
+decisions_needed
+review_targets
 ```
 
-During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
+The adapter still performs exact validation and sensitive filtering. Prompt-only JSON is not an acceptable silent fallback.
 
-No real NIM call is needed for these deterministic tests.
+### N5 — continuity
 
-## Phase A.7 — live terminal-tool probe
+Map stable Delegent Worker identity to Codex session/thread identity and validate `codex exec resume` for related follow-up. Independent review remains fresh-session work.
 
-The first live terminal-tool call passed preflight but returned:
+### N6 — controlled mutation
+
+Use the repository-local fixture/verifier. Scope, architecture, security, and final acceptance remain Lead-owned.
+
+### N7 — adapter
+
+Only after standalone N0-N6 pass, implement the production candidate such as:
 
 ```text
-WORKER_PROTOCOL_ERROR
-kind: missing_terminal_handoff
-session_id: ses_fad1d4ebbffer6qn1CM3aLB22z
-exit_code: none
-summary: Supported session sources contained no terminal structured result.
+skills/delegating-work/scripts/codex-nim-worker.ps1
+skills/delegating-work/schemas/delegent-handoff.schema.json
+skills/delegating-work/schemas/delegent-decision.schema.json
 ```
 
-That result did not distinguish missing tool discovery from a model that simply ended without calling a terminal tool, so a runtime catalog invariant was added using OpenCode's `GET /experimental/tool/ids` endpoint.
+Do not reimplement Codex's tool loop, repo tools, sandbox, or session storage.
 
-The next live call returned before inference:
+### N8 — runtime bake-off
+
+Compare OpenCode baseline and Codex/NIM on the same controlled Worker tasks. Correctness and protocol reliability dominate small latency differences.
+
+### N9 — controlled Delegent composition
+
+Run the existing B1/B2 intent:
 
 ```text
-WORKER_PROTOCOL_ERROR
-kind: terminal_tools_unavailable
-session_id: none
-exit_code: none
-summary: OpenCode did not register the required Delegent terminal tools.
+B1 trivial task -> Lead may keep locally
+B2 context-heavy task -> Codex/NIM Worker -> validated handoff -> Lead acceptance
 ```
 
-This proved the current blocker was custom-tool discovery, not Nemotron tool-choice behavior.
+Codex/NIM becomes the V0.1 preferred Worker runtime only after B2/N9 passes.
 
-Inspection of OpenCode 1.18.25 showed that `OPENCODE_CONFIG_DIR` is an explicit discovery directory. OpenCode loads `tools/*.ts` from that exact directory, installs `@opencode-ai/plugin` for it, and waits for the dependency before importing matching custom tools. The wrapper therefore no longer infers the global custom-tool path from `XDG_CONFIG_HOME`; it now:
+## Runtime pivot rule
 
 ```text
-DELEGENT_RUNTIME
-  -> delegent-config
-      -> tools
-          -> delegent_handoff.ts
-          -> delegent_decision.ts
+Delegent core      = accepted
+Codex+NIM runtime  = preferred candidate under test
+OpenCode runtime   = frozen baseline/fallback
 ```
 
-and exports that `delegent-config` path through `OPENCODE_CONFIG_DIR` before starting `opencode serve`.
+Do not delete the OpenCode adapter until at least one realistic ticket/spec task passes on the selected replacement runtime.
 
-The runtime catalog invariant remains in place. The next live call therefore has three meaningful outcomes:
-
-- `terminal_tools_unavailable`: explicit discovery still failed; investigate OpenCode import/dependency loading without spending a Worker inference call.
-- `missing_terminal_handoff`: both terminal tools were registered before inference, but Nemotron did not produce a completed terminal call; investigate normal-tool/tool-choice behavior.
-- compact eight-field handoff: A.7 passes.
-
-OpenCode 1.18.25's normal message path leaves tool choice to the provider/model; its special `format: json_schema` path is the path that explicitly requires a tool call, and that special path is already known to fail in this stack. Do not re-enable it merely to force a terminal call.
-
-From the repository root:
-
-```powershell
-$worker = "$HOME\.agents\skills\delegating-work\scripts\nemotron-worker.ps1"
-
-& $worker `
-  --title "delegent:agent-delegation-skill:terminal-probe:plan" `
-  --agent plan `
-  --dir (Get-Location).Path `
-  "Read only README.md. Do not modify files. Complete the task, then use the required Delegent terminal handoff mechanism. SUMMARY must say terminal protocol probe completed. CHANGES and TESTS should be none when inapplicable."
-```
-
-Expected Lead-visible output is only the compact eight-field handoff. No OpenCode banner, reasoning, normal tool output, CLIXML, server logs, or credential content should appear.
-
-Stop before Phase B if A.7 returns `WORKER_PROTOCOL_ERROR`, leaks trajectory/secrets, changes repository files, hangs beyond the configured timeout, or leaves the OpenCode server alive.
-
-## Phase B — controlled Delegent composition
-
-Use the repository-local companion workflow:
+If Codex+NIM fails for a structural reason rather than a small compatibility issue, next candidate order is:
 
 ```text
-$delegent $delegent-eval-workflow
+Direct minimal NIM runtime
+-> Goose + NIM
+-> revisit OpenCode
 ```
 
-Run two controlled routing cases rather than treating one trivial fixture edit as sufficient evidence.
+## Phase C — Matt `implement`
 
-### B1 — trivial Lead-owned case
-
-Use a tiny deterministic operation where delegation overhead is not worthwhile. PASS means Delegent is allowed to keep the work with Lead rather than mechanically dispatching every task.
-
-### B2 — controlled delegated case
-
-Use a bounded repository-local task with enough inspection/verification work to cross the dispatch-overhead gate, while keeping architecture, security, public contracts, and final acceptance fixed and Lead-owned.
-
-PASS requires proof of:
-
-```text
-Lead
-  -> Delegent placement
-  -> Worker through terminal-tool runtime protocol
-  -> compact validated handoff only
-  -> Lead review/final acceptance
-```
-
-No Matt/external workflow semantics should be involved yet.
-
-## Phase C — Matt `implement` integration
-
-Only after A.7 and B pass, install/verify the actual current Matt Pocock skills used by `implement`, at minimum:
+Only after runtime selection and N9 controlled composition pass, install/verify the current Matt workflows, at minimum:
 
 ```text
 implement
@@ -205,21 +202,22 @@ tdd
 code-review
 ```
 
-Use the installed version as source of truth. Verify that Delegent preserves the workflow's completion gates while keeping high-impact architecture/security/public-contract decisions and final acceptance with Lead.
+The selected workflow owns what must happen. Delegent owns where significant work lives, continuity, escalation, Context Firewall enforcement, and Lead final acceptance.
 
 ## Phase D — realistic ticket/spec development
 
-After Phase C passes, exercise Delegent on normal ticket/spec-driven development. This is the first layer to treat as realistic product usage rather than controlled validation.
+After Phase C passes, run a normal ticket/spec-driven task. This is the first layer treated as realistic product usage rather than a controlled runtime evaluation.
 
-## Security preflight before any real Worker call
+## Security preflight
 
-Before A.7, B2, C, or D:
+Before any real Worker call:
 
-1. affected NVIDIA credentials must be rotated if required;
-2. credential lives only in ignored `skills/delegating-work/.env`;
-3. working tree is clean;
-4. credential-residue scan is clean;
-5. general build Workers do not mutate credential/protocol adapter code.
+1. credential exists only in the intended ignored secret location/environment;
+2. working tree is clean;
+3. credential residue scan is clean;
+4. runtime adapter code remains Lead-owned for mutation/review;
+5. stderr/logging is not merged into the machine protocol stream;
+6. final handoff passes exact schema + sensitive-value filtering before entering Lead context.
 
 For controlled composition:
 
@@ -233,12 +231,15 @@ For Matt integration:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireMattWorkflows
 ```
 
-## Acceptance progression
+## Immediate next action
 
-```text
-A.6 PASS = terminal-tool protocol is deterministic locally
-A.7 PASS = terminal-tool protocol works on real OpenCode/Nemotron runtime
-B PASS   = Delegent composition/routing works in controlled cases
-C PASS   = primary real-world workflow composes correctly
-D PASS   = realistic ticket/spec use is ready for broader evaluation
-```
+Do not run another OpenCode A.7 as the next test.
+
+Start Codex/NIM N0-N1:
+
+1. record `codex --version`;
+2. inspect `codex exec --help`;
+3. create an isolated test `CODEX_HOME`;
+4. configure the NIM custom provider without modifying normal Codex settings;
+5. test the actual hosted NVIDIA `/v1/responses` behavior;
+6. if compatible, run the first ephemeral read-only `codex exec -p nim-worker --json` smoke.
