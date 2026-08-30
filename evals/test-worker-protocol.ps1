@@ -9,8 +9,11 @@ $credentialPath = Join-Path $skillRoot '.env'
 . $terminalProtocolPath
 
 function Assert-True {
-    param([bool]$Condition)
-    if (-not $Condition) { throw 'Assertion failed.' }
+    param(
+        [bool]$Condition,
+        [string]$Message = 'Assertion failed.'
+    )
+    if (-not $Condition) { throw $Message }
 }
 
 function New-NormalResult {
@@ -68,22 +71,33 @@ function New-ResponseJson {
     @{ info = $info; parts = $Parts } | ConvertTo-Json -Depth 16 -Compress
 }
 
+# Windows PowerShell 5.1 can behave differently when scriptblocks created with
+# GetNewClosure() are invoked across function/module scopes. Keep fake transport
+# state explicitly at script scope so protocol tests exercise the adapter rather
+# than closure/module visibility quirks.
+$script:DelegentFakeRoutes = @{}
+
 function New-FakeRequest {
     param([hashtable]$Routes)
-    $queues = @{}
+
+    $script:DelegentFakeRoutes = @{}
     foreach ($key in $Routes.Keys) {
         $queue = New-Object Collections.Queue
         foreach ($item in @($Routes[$key])) { $queue.Enqueue($item) }
-        $queues[$key] = $queue
+        $script:DelegentFakeRoutes[$key] = $queue
     }
+
     {
         param($Method, $Path, $BodyJson, $TimeoutSeconds)
         $key = "$Method $Path"
-        if (-not $queues.ContainsKey($key) -or $queues[$key].Count -eq 0) { throw 'Unexpected fake request.' }
-        $item = $queues[$key].Dequeue()
+        $routes = $script:DelegentFakeRoutes
+        if (-not $routes.ContainsKey($key) -or $routes[$key].Count -eq 0) {
+            throw "Unexpected fake request: $key"
+        }
+        $item = $routes[$key].Dequeue()
         if ($item -is [scriptblock]) { return & $item $Method $Path $BodyJson $TimeoutSeconds }
         return [string]$item
-    }.GetNewClosure()
+    }
 }
 
 function New-Invocation {
@@ -100,7 +114,7 @@ $tests['valid terminal handoff'] = {
         'POST /session/ses_valid/message' = @(New-ResponseJson $parts)
     }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_valid') $request
-    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'WORKER_PROTOCOL_ERROR')
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'WORKER_PROTOCOL_ERROR') "Unexpected result: $($result.Output)"
 }
 
 $tests['valid terminal decision'] = {
@@ -110,7 +124,7 @@ $tests['valid terminal decision'] = {
         'POST /session/ses_decision/message' = @(New-ResponseJson $parts)
     }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_decision') $request
-    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^DECISION_NEEDED' -and $result.Output -match 'Recommendation:')
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^DECISION_NEEDED' -and $result.Output -match 'Recommendation:') "Unexpected result: $($result.Output)"
 }
 
 $tests['ordinary trajectory excluded'] = {
@@ -124,7 +138,7 @@ $tests['ordinary trajectory excluded'] = {
         'POST /session/ses_trajectory/message' = @(New-ResponseJson $parts)
     }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_trajectory' 'build') $request
-    Assert-True ($result.ExitCode -eq 0 -and $result.Output -notmatch 'trajectory-progress-marker|human terminal noise')
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -notmatch 'trajectory-progress-marker|human terminal noise') "Unexpected result: $($result.Output)"
 }
 
 $tests['missing terminal tool'] = {
@@ -222,7 +236,7 @@ $tests['persisted session recovery'] = {
         'GET /session/ses_recovery/message' = @($persisted)
     }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation $null) $request
-    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'hidden trajectory')
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^STATUS: completed' -and $result.Output -notmatch 'hidden trajectory') "Unexpected result: $($result.Output)"
 }
 
 $tests['stale terminal result rejected on reuse'] = {
@@ -260,19 +274,21 @@ $tests['sensitive content excluded'] = {
             Where-Object { $_.FullName -notmatch '\\.git\\' -and $_.FullName -ne $credentialPath } |
             Select-String -SimpleMatch $fakeCredential -List -ErrorAction SilentlyContinue
     )
-    Assert-True ($safe.ExitCode -eq 0 -and $safe.Output -notmatch [regex]::Escape($fakeCredential) -and $leak.Output -match 'kind: runtime_output_error' -and $leak.Output -notmatch [regex]::Escape($fakeCredential) -and $residue.Count -eq 0)
+    Assert-True ($safe.ExitCode -eq 0 -and $safe.Output -notmatch [regex]::Escape($fakeCredential) -and $leak.Output -match 'kind: runtime_output_error' -and $leak.Output -notmatch [regex]::Escape($fakeCredential) -and $residue.Count -eq 0) "Safe=$($safe.Output); Leak=$($leak.Output)"
 }
 
 $tests['message body has no format or agent'] = {
-    $capture = @{ Body = $null }
+    $script:DelegentCapturedBody = $null
+    $script:DelegentMessageBodyResponse = New-ResponseJson @((New-TerminalPart 'delegent_handoff' (New-NormalResult)))
     $request = {
         param($Method, $Path, $BodyJson, $TimeoutSeconds)
         if ($Method -eq 'GET') { return '[]' }
-        $capture.Body = ConvertFrom-Json $BodyJson
-        return New-ResponseJson @((New-TerminalPart 'delegent_handoff' (New-NormalResult)))
-    }.GetNewClosure()
+        $script:DelegentCapturedBody = ConvertFrom-Json $BodyJson
+        return $script:DelegentMessageBodyResponse
+    }
     $result = Invoke-DelegentWorkerProtocol (New-Invocation 'ses_body' 'build') $request
-    Assert-True ($result.ExitCode -eq 0 -and $null -eq $capture.Body.PSObject.Properties['format'] -and $null -eq $capture.Body.PSObject.Properties['agent'] -and $capture.Body.model.providerID -eq 'nvidia')
+    $capture = $script:DelegentCapturedBody
+    Assert-True ($result.ExitCode -eq 0 -and $null -ne $capture -and $null -eq $capture.PSObject.Properties['format'] -and $null -eq $capture.PSObject.Properties['agent'] -and $capture.model.providerID -eq 'nvidia') "Unexpected result/body: $($result.Output)"
 }
 
 $tests['terminal tool installation'] = {
