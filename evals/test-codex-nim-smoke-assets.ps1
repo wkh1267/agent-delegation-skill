@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $smokePath = Join-Path $PSScriptRoot 'run-codex-nim-smoke.ps1'
+$doctorPath = Join-Path $PSScriptRoot 'diagnose-codex-nim-doctor.ps1'
 
 function Assert-True {
     param(
@@ -9,10 +10,12 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-$tokens = $null
-$errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$errors)
-Assert-True ($errors.Count -eq 0) 'N2 smoke script must parse under Windows PowerShell 5.1.'
+foreach ($path in @($smokePath, $doctorPath)) {
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    Assert-True ($errors.Count -eq 0) "PowerShell parser errors in $path"
+}
 
 $smoke = Get-Content -Raw -LiteralPath $smokePath
 Assert-True ($smoke -match 'CODEX_HOME') 'N2 smoke must use isolated CODEX_HOME.'
@@ -34,5 +37,19 @@ Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\
 Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 smoke must not contain a NVIDIA credential literal.'
 Assert-True ($smoke -match 'credential_value_logged=False') 'N2 smoke must make the no-secret-output contract explicit.'
 
-Write-Output 'PASS Codex NIM N2 smoke assets'
+$doctor = Get-Content -Raw -LiteralPath $doctorPath
+Assert-True ($doctor -match 'setup-codex-nim\.ps1') 'N2 doctor must use the same isolated NIM provider/profile setup.'
+Assert-True ($doctor -match '-p nim-worker doctor --json') 'N2 doctor must inspect the same Profile V2 selection without an agent turn.'
+Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'config\.load'") 'N2 doctor must inspect config.load.'
+Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'auth\.credentials'") 'N2 doctor must inspect auth.credentials.'
+Assert-True ($doctor -match "Get-DoctorCheck -Report \$report -Id 'network\.provider_reachability'") 'N2 doctor must inspect provider reachability.'
+Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require the NIM provider.'
+Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
+Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
+Assert-True ($doctor -match 'doctorStdout\.Contains\(\$key\)' -and $doctor -match 'doctorStderr\.Contains\(\$key\)') 'N2 doctor must detect credential leakage in captured streams.'
+Assert-True ($doctor -notmatch 'Write-Output[^\r\n]*(\$doctorStdout\b|\$doctorStderr\b|\$key\b)') 'N2 doctor must not print raw doctor streams or credential values.'
+Assert-True ($doctor -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 doctor must not contain a NVIDIA credential literal.'
+Assert-True ($doctor -match 'credential_value_logged=False') 'N2 doctor must make the no-secret-output contract explicit.'
+
+Write-Output 'PASS Codex NIM N2 smoke and doctor assets'
 exit 0
