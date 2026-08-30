@@ -38,8 +38,6 @@ $env:XDG_DATA_HOME = Join-Path $runtime 'data'
 $env:XDG_CACHE_HOME = Join-Path $runtime 'cache'
 $env:XDG_STATE_HOME = Join-Path $runtime 'state'
 $env:OPENCODE_CONFIG = $null
-# Do not inherit a caller-owned explicit config directory. Normal Worker runs
-# install Delegent-owned tools into their own explicit directory below.
 $env:OPENCODE_CONFIG_DIR = $null
 $baseConfigPath = Join-Path $skillRoot 'opencode.json'
 $env:OPENCODE_CONFIG_CONTENT = Get-Content -Raw $baseConfigPath
@@ -87,16 +85,38 @@ try {
     # server config instead of putting `agent` in the message body.
     $config = Get-Content -Raw $baseConfigPath | ConvertFrom-Json -ErrorAction Stop
     if ($invocation.Agent) { $config.default_agent = [string]$invocation.Agent }
+
+    # Register the terminal tools through the config's explicit local-plugin
+    # seam. This avoids relying on OpenCode's custom-tool directory discovery
+    # and avoids any runtime @opencode-ai/plugin dependency/bootstrap.
+    $terminalPluginPath = (Resolve-Path -LiteralPath (Join-Path $skillRoot 'plugins\delegent-terminal.js') -ErrorAction Stop).Path
+    $terminalPluginUri = ([System.Uri]::new($terminalPluginPath)).AbsoluteUri
+    $pluginList = @()
+    if ($null -ne $config.PSObject.Properties['plugin']) {
+        $pluginList += @($config.plugin)
+    }
+    if ($pluginList -cnotcontains $terminalPluginUri) {
+        $pluginList += $terminalPluginUri
+    }
+    if ($null -ne $config.PSObject.Properties['plugin']) {
+        $config.plugin = $pluginList
+    }
+    else {
+        $config | Add-Member -MemberType NoteProperty -Name plugin -Value $pluginList
+    }
     $env:OPENCODE_CONFIG_CONTENT = $config | ConvertTo-Json -Depth 32 -Compress
 
-    # Use OpenCode's explicit config-directory seam rather than inferring a
-    # global tools path from XDG_CONFIG_HOME. OpenCode 1.18.25 adds this exact
-    # directory to discovery, installs @opencode-ai/plugin there, and waits for
-    # that dependency before importing custom tools.
-    $delegentConfigDir = Join-Path $runtime 'delegent-config'
-    New-Item -ItemType Directory -Force -Path $delegentConfigDir -ErrorAction Stop | Out-Null
-    $env:OPENCODE_CONFIG_DIR = $delegentConfigDir
-    $null = Install-DelegentTerminalTools -SkillRoot $skillRoot -ConfigDir $delegentConfigDir
+    # Remove only Delegent-owned files left by earlier discovery experiments so
+    # they cannot be auto-discovered alongside the explicit plugin registration.
+    $legacyToolRoots = @(
+        (Join-Path (Join-Path $env:XDG_CONFIG_HOME 'opencode') 'tools'),
+        (Join-Path (Join-Path $runtime 'delegent-config') 'tools')
+    )
+    foreach ($legacyRoot in $legacyToolRoots) {
+        foreach ($legacyName in @('delegent_handoff.ts', 'delegent_decision.ts')) {
+            Remove-Item -LiteralPath (Join-Path $legacyRoot $legacyName) -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 catch {
     $result = New-DelegentProtocolError -Kind runtime_output_error
@@ -171,11 +191,9 @@ try {
     }
     if (-not $healthy) { throw 'OpenCode server did not become healthy.' }
 
-    # First use of an explicit OpenCode config directory may install
-    # @opencode-ai/plugin before custom tools can be imported. ToolRegistry waits
-    # for that dependency, so a five-second catalog request is too aggressive on
-    # a cold runtime. Keep bootstrap bounded, retry short timed-out requests, and
-    # never spend a Worker inference call until both terminal tools are visible.
+    # Before spending a Worker inference call, prove that this exact OpenCode
+    # server instance registered both terminal tools from the Delegent plugin.
+    # Keep this bounded and retry request-level timeouts during cold startup.
     $bootstrapTimeoutSeconds = 60
     if ($env:DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS) {
         $parsedBootstrapTimeout = 0
