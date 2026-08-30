@@ -11,7 +11,7 @@ The `$implement` example used during design refers to Matt Pocock's `skills/engi
 Delegent itself must remain workflow-agnostic:
 
 - Delegent does **not** require Matt's skills to function.
-- The next Worker-runtime test must not depend on `$implement`.
+- Worker-runtime validation must not depend on `$implement`.
 - A repository-local controlled workflow should validate Delegent composition before external workflow integration is introduced.
 - Matt's `implement` should later be installed together with the workflow skills it relies on (notably `tdd` and `code-review`) and used as a high-value real-world integration test.
 
@@ -25,8 +25,12 @@ Run validation in this order:
 A. Worker protocol
    fake/local runtime only
         ↓
-B. Controlled Delegent workflow
-   $delegent $delegent-eval-workflow
+A.5 Live Worker transport compatibility
+   direct read-only wrapper probe
+        ↓
+B. Controlled Delegent composition
+   B1 trivial Lead-owned routing
+   B2 controlled delegated routing
         ↓
 C. Real workflow integration
    Matt Pocock $implement (+ tdd/code-review)
@@ -34,7 +38,7 @@ C. Real workflow integration
 D. Real ticket/spec development
 ```
 
-Do not skip directly to layer C while layer A is still failing.
+Do not skip directly to layer C while an earlier layer is still failing.
 
 ## Phase A — Worker runtime protocol
 
@@ -56,11 +60,58 @@ Requirements:
 - preserve existing session/title/agent/dir behavior;
 - do not leak credential values into source, logs, fixtures, errors, or handoffs.
 
-Minimum deterministic cases are listed in `runtime-protocol.md` and must pass before Phase B.
+Minimum deterministic cases are listed in `runtime-protocol.md` and must pass before Phase A.5.
 
 Adapter code is security-sensitive. Workers may perform read-only diagnosis or propose a patch, but Lead owns/explicitly approves mutation and final review.
 
-## Phase B — Controlled workflow composition
+### Phase A result
+
+The first implementation passed 14 deterministic fake-only cases, PowerShell AST parsing, diff hygiene, credential-residue checks, and process-lifecycle cleanup. Worker execution no longer depends on parsing `opencode run` human terminal output; normal Worker runs use an authenticated loopback OpenCode server/session API and JSON-schema structured result validation.
+
+Phase A establishes local protocol correctness, but it does **not** prove compatibility with the installed OpenCode server/NVIDIA provider runtime because real Worker execution was intentionally forbidden during Phase A.
+
+## Phase A.5 — Live Worker transport compatibility
+
+Goal: verify the smallest possible real OpenCode/NIM path before combining it with Delegent workflow composition.
+
+This phase makes one bounded, read-only Worker call through the wrapper. It is not a repository mutation test and does not use `$delegent`.
+
+Preconditions:
+
+- Phase A is PASS;
+- the affected NVIDIA API key has been rotated;
+- repository preflight passes;
+- working tree is clean;
+- no build Worker is asked to modify security-sensitive adapter code.
+
+Recommended probe from the repository root:
+
+```powershell
+$worker = "$HOME\.agents\skills\delegating-work\scripts\nemotron-worker.ps1"
+
+& $worker `
+  --title "delegent:agent-delegation-skill:protocol-probe:plan" `
+  --agent plan `
+  --dir (Get-Location).Path `
+  "Read only README.md and return a normal Worker handoff. Do not modify files. SUMMARY must say protocol probe completed. CHANGES and TESTS should be none when inapplicable."
+```
+
+Expected:
+
+- the OpenCode server becomes healthy on loopback;
+- Basic Auth works without exposing the server password;
+- the configured NVIDIA/Nemotron model is accepted;
+- `POST /session/:id/message` accepts the JSON-schema `format` request;
+- the adapter emits only the compact eight-field handoff;
+- no raw tool/text trajectory reaches Lead-visible output;
+- no repository files change;
+- the server process and descendants terminate after the wrapper exits.
+
+Known upstream compatibility risk: some OpenCode versions have had bugs when rereading sessions that contain output-format metadata. The primary synchronous structured response should therefore be considered the preferred source; persisted-session recovery is a fallback and may fail deterministically on affected versions rather than reconstructing output from raw trajectory.
+
+Stop before Phase B if this probe returns `WORKER_PROTOCOL_ERROR`, hangs beyond the configured timeout, leaks trajectory/secrets, changes files, or leaves the server running.
+
+## Phase B — Controlled Delegent composition
 
 Use the repository-local workflow:
 
@@ -68,7 +119,11 @@ Use the repository-local workflow:
 $delegent $delegent-eval-workflow
 ```
 
-Test task:
+Phase B contains two routing cases because Delegent must prove both sides of the dispatch-overhead gate.
+
+### B1 — Trivial local work stays with Lead
+
+Use the existing one-line fixture task:
 
 ```text
 Change evals/fixtures/controlled-workflow.txt from:
@@ -86,21 +141,55 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\check-controlled-wor
 Do not commit. Leave the one-line fixture change for Lead review.
 ```
 
-Expected orchestration:
+Expected:
 
 - companion workflow is found and loaded;
-- Delegent keeps intent/scope/final acceptance with Lead;
-- the one-line implementation and focused verification may be delegated if the placement policy says dispatch is worthwhile;
-- no external/nested workflow skills are involved;
-- Worker returns only a validated compact handoff through the runtime protocol;
-- Lead inspects the one-line diff and verifier evidence;
+- Delegent preserves exact scope and completion requirements;
+- Lead may correctly keep this task local because dispatch overhead exceeds context savings;
+- final acceptance stays with Lead;
 - after recording the result, restore the fixture to `mode=baseline`.
 
-This phase intentionally removes Matt/TDD/code-review/commit semantics from the experiment.
+B1 validates that Delegent does not delegate mechanically merely because a workflow is active. It does **not** prove the live Worker path.
+
+### B2 — Controlled delegated work crosses the Worker boundary
+
+Run a controlled task whose exploration/verification context is intentionally large enough to make Worker placement clearly worthwhile while keeping mutations deterministic and narrow.
+
+The task must satisfy all of the following:
+
+- architecture and expected outputs are already fixed;
+- no security/public-contract/schema decision is required;
+- Worker scope is explicit and confined to eval fixtures/tests;
+- multiple reads/checks or enough disposable execution context exist that dispatch overhead is lower than Lead context cost;
+- the final mutation remains small and easy for Lead to review;
+- a deterministic focused verifier defines success;
+- no nested external workflow skills or commit behavior are involved.
+
+Expected orchestration:
+
+- context-heavy exploration/verification is delegated to a Worker;
+- Worker selection follows reuse/fresh policy deliberately;
+- Worker result crosses the new structured runtime boundary;
+- Lead receives only the validated compact handoff;
+- Lead verifies the narrow diff/evidence and performs final acceptance;
+- raw Worker trajectory is not reconstructed by Lead.
+
+B2 is the controlled proof of the full path:
+
+```text
+Codex Lead
+  -> Delegent
+  -> delegating-work placement
+  -> OpenCode/Nemotron Worker
+  -> structured validated handoff
+  -> Lead acceptance
+```
+
+Do not mark Phase B complete until both B1 and B2 behave as expected.
 
 ## Phase C — Matt `implement` integration
 
-Only after Phases A and B pass, install/verify the Matt Pocock engineering workflows used by `implement`.
+Only after Phases A, A.5, and B pass, install/verify the Matt Pocock engineering workflows used by `implement`.
 
 Primary target repository:
 
@@ -135,7 +224,7 @@ Validation questions:
 - Does nested workflow activity avoid bypassing the Context Firewall?
 - Does final acceptance remain with Lead?
 
-Matt `implement` is a major real-world acceptance target, but a failure here must be classified separately from Phase A/B runtime correctness.
+Matt `implement` is a major real-world acceptance target, but a failure here must be classified separately from Phase A/A.5/B runtime correctness.
 
 ## Phase D — Real ticket/spec development
 
@@ -161,7 +250,7 @@ A repository-local preflight script performs the non-secret checks without requi
 powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1
 ```
 
-For the controlled Phase B run, require the eval workflow junction too:
+For controlled Delegent runs, require the eval workflow junction too:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\preflight.ps1 -RequireEvalWorkflow
@@ -213,6 +302,7 @@ If an explicitly selected workflow is unavailable, Delegent must fail fast inste
 Do not continue to the next phase when:
 
 - the Worker adapter cannot deterministically validate/recover the terminal structured result;
+- the live transport probe cannot produce a valid structured handoff;
 - the adapter leaks or interpolates a credential;
 - companion workflow discovery is ambiguous or missing;
 - a Worker mutation crosses a Lead-owned security/architecture boundary;
@@ -223,10 +313,13 @@ Do not continue to the next phase when:
 
 ```text
 Phase A PASS
-  = Worker protocol boundary is trustworthy
+  = local Worker protocol boundary is deterministic under fake/runtime tests
+
+Phase A.5 PASS
+  = installed OpenCode/NIM transport is compatible with the structured boundary
 
 Phase B PASS
-  = Delegent workflow composition is trustworthy in a controlled case
+  = Delegent routing and workflow composition are trustworthy in controlled Lead-owned and delegated cases
 
 Phase C PASS
   = Delegent composes the primary real-world Matt workflow correctly
