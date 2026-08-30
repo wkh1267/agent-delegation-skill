@@ -11,8 +11,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run fake-only Worker protocol tests
+      - name: Run focused protocol diagnostic
         shell: powershell
         run: |
           $PSVersionTable.PSVersion
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\debug-worker-protocol.ps1
+      - name: Run fake-only Worker protocol tests
+        shell: powershell
+        run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-worker-protocol.ps1
