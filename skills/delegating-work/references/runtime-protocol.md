@@ -1,125 +1,55 @@
 # Worker Runtime Protocol
 
-This document defines the V0.1 reliability target for the boundary between
-Delegent and the configured OpenCode/Nemotron Worker runtime.
+This document defines the V0.1 reliability boundary between Delegent and the configured OpenCode/Nemotron Worker runtime.
 
-The Worker contract defines **what the Worker must report**. This runtime
-protocol defines **how the adapter must transport and validate that report**
-without leaking the Worker's raw trajectory into Lead context.
+The Worker contract defines **what** a Worker must report. This protocol defines **how** the adapter transports and validates that result without leaking the Worker's raw trajectory into Lead context.
 
-## Motivation
+## Why the boundary is structured
 
-End-to-end smoke testing showed that prompt compliance alone is not a reliable
-machine-to-machine boundary:
+Early end-to-end runs showed that prompt compliance and human terminal output are not reliable machine-to-machine interfaces. Workers sometimes completed tool activity without a usable final handoff; `opencode run` could omit final text or mix it with banners, stderr/CLIXML, and tool trajectory; and a Worker-authored wrapper repair briefly expanded a credential into generated source before Lead rejected it.
 
-- a build Worker attempted to create `handoff.txt` and `test.txt` instead of
-  returning the required terminal handoff;
-- some Worker runs completed tool activity but produced no terminal eight-field
-  handoff;
-- same-session handoff-only retries could produce no usable output;
-- human-oriented terminal output may mix banners, tool trajectory, ANSI output,
-  stderr/PowerShell serialization noise, and the final assistant text;
-- an attempted Worker-authored wrapper rewrite introduced a PowerShell parse
-  failure and expanded a credential value into generated source before Lead
-  acceptance rejected the change.
+Therefore the Context Firewall is enforced by the adapter, not by prompts alone.
 
-External OpenCode behavior also matters. Current OpenCode documentation exposes
-session/message APIs and SDK structured output with JSON Schema, while recent
-OpenCode issue reports show that `opencode run --format json` can intermittently
-omit final text/step events or hang even after the answer is persisted,
-including headless, container, reused-session, and Windows cases (for example
-OpenCode issues #26855, #31404, and #32506).
+## V0.1 transport
 
-These findings mean the Context Firewall must be enforced by the runtime
-adapter, not only by prompts, and that CLI stdout must not be the sole source of
-truth for Worker completion.
-
-## Required boundary
-
-Preferred target flow:
+The accepted V0.1 path is:
 
 ```text
 Codex Lead
-    |
-    | compact dispatch contract
-    v
-Delegent Worker adapter
-    |
-    | OpenCode session API / SDK
-    | + JSON-schema structured result
-    v
-validated assistant result
-    |
-    +-- valid --> compact handoff only --> Lead
-    |
-    +-- invalid --> WORKER_PROTOCOL_ERROR --> Lead
+  -> compact dispatch
+  -> Delegent Worker adapter
+  -> authenticated loopback OpenCode session API
+  -> normal OpenCode/Nemotron tool execution
+  -> exactly one terminal Delegent custom tool
+       delegent_handoff
+       OR
+       delegent_decision
+  -> adapter reads only that tool part's state.input
+  -> exact validation
+  -> compact Lead-visible handoff / escalation
 ```
 
-The Lead must not parse arbitrary human-formatted OpenCode terminal output.
+The adapter must never reconstruct a missing handoff from assistant prose, tool output, reasoning, stdout/stderr, or other trajectory.
 
-## Preferred transport: session API / SDK
+## Why terminal custom tools replaced `format: json_schema`
 
-Prefer OpenCode's supported session/message API or SDK for the Worker protocol
-boundary rather than scraping `opencode run` terminal output.
+Phase A initially used OpenCode's special `format: json_schema` structured-output feature. Local fake tests passed, but live compatibility testing on OpenCode 1.18.25 showed:
 
-Current OpenCode docs expose:
+- `opencode serve`, health, Basic Auth, and session creation worked;
+- plain OpenCode/Nemotron execution worked, including repository `read` tool use;
+- direct NVIDIA NIM inference with Nemotron 3 Super worked;
+- a direct forced named `StructuredOutput` tool call to the same NVIDIA hosted model worked;
+- the OpenCode `POST /session/:id/message` path using `format: json_schema` still failed with a runtime error.
 
-```text
-POST /session/:id/message
-GET  /session/:id/message
-GET  /session/:id/message/:messageID
-```
+This isolates the blocker to OpenCode's special structured-output integration rather than NVIDIA connectivity or Nemotron tool-calling ability.
 
-and the SDK exposes `session.prompt`, `session.messages`, and `session.message`.
-The SDK also supports structured output by supplying a JSON Schema to the
-prompt format. The model uses OpenCode's structured-output mechanism to return
-validated JSON matching that schema.
+Delegent therefore uses ordinary OpenCode custom tools for its terminal boundary. This stays machine-readable while avoiding the broken special path.
 
-For Delegent, the structured result should represent one of two shapes:
+## Terminal tools
 
-1. normal Worker handoff;
-2. hard `DECISION_NEEDED` escalation.
+### `delegent_handoff`
 
-The adapter should create/reuse the intended session explicitly, submit the
-compact dispatch contract, wait for completion with a bounded timeout, and
-read the persisted assistant result through the supported session interface.
-
-If the synchronous prompt surface is unreliable in the installed OpenCode
-version, an acceptable implementation is:
-
-```text
-submit prompt
-  -> bounded wait / session-status polling
-  -> read latest assistant message from persisted session API
-  -> validate structured result
-```
-
-Do not read OpenCode's SQLite database directly as the primary design while a
-supported session API is available.
-
-## CLI JSON compatibility path
-
-`opencode run --format json` may still be useful as a compatibility/debug path,
-but it is not sufficient as the only V0.1 protocol transport.
-
-If used, the adapter must treat the JSONL stream as provisional telemetry:
-
-- parse JSON events rather than human terminal text;
-- keep tool/progress events behind the Context Firewall;
-- record the session ID when available;
-- never assume process exit or `step_finish` alone proves a terminal handoff was
-  captured;
-- if terminal text is missing, recover the persisted result through the
-  supported session API before declaring protocol failure;
-- bound hangs/timeouts and abort or fail deterministically.
-
-The adapter must not depend on ad-hoc regex extraction from merged stdout/stderr
-or PowerShell CLIXML.
-
-## Handoff schema
-
-The preferred machine representation is structured JSON rather than a
-human-formatted eight-line block. It must contain exactly these logical fields:
+Arguments must contain exactly:
 
 ```text
 status: completed | blocked
@@ -132,36 +62,11 @@ decisions_needed
 review_targets
 ```
 
-The adapter may render that structured object into the existing textual handoff
-for the Lead boundary:
+### `delegent_decision`
+
+Arguments must contain exactly:
 
 ```text
-STATUS: completed | blocked
-SUMMARY:
-EVIDENCE:
-CHANGES:
-TESTS:
-RISKS:
-DECISIONS_NEEDED:
-REVIEW_TARGETS:
-```
-
-Validation requirements:
-
-1. `status` is exactly `completed` or `blocked`.
-2. All eight logical fields are present exactly once in the structured result.
-3. A field may contain `none` when genuinely inapplicable, but may not be
-   silently omitted.
-4. The Worker must not substitute a handoff file for the protocol result.
-5. The adapter must not infer missing fields from tool logs or reconstruct the
-   Worker's reasoning.
-6. Missing, malformed, or ambiguous structured output is a protocol failure,
-   not successful delegation.
-
-Hard escalation remains a separate accepted structured shape with:
-
-```text
-kind: decision_needed
 question
 evidence
 options
@@ -169,22 +74,43 @@ recommendation
 confidence
 ```
 
-The adapter may render it for the Lead as:
+The adapter converts `delegent_decision` into the Lead-facing `DECISION_NEEDED` contract.
 
-```text
-DECISION_NEEDED
-Question:
-Evidence:
-Options:
-Recommendation:
-Confidence:
-```
+Both terminal tools are side-effect free. They do not read credentials, mutate the repository, or persist handoff files. OpenCode records their structured arguments in the normal session message tool part, and the adapter reads `parts[].state.input`.
+
+The tools live under the Delegent skill and are copied into the wrapper-controlled OpenCode config root before the isolated server starts. Target repositories are not modified.
+
+## Validation rules
+
+For the current delegated task:
+
+1. exactly one terminal Delegent tool call is accepted;
+2. zero terminal calls is `missing_terminal_handoff`;
+3. multiple handoffs, multiple decisions, or handoff + decision is `malformed_handoff`;
+4. the terminal tool must have completed;
+5. all required arguments must exist exactly once and be non-empty strings;
+6. unexpected arguments are rejected;
+7. normal handoff `status` must be exactly `completed` or `blocked`;
+8. stale terminal calls from a reused session baseline are ignored;
+9. ordinary read/edit/bash/tool parts, reasoning, and assistant text never cross the Context Firewall;
+10. any configured sensitive value appearing in the terminal arguments causes deterministic failure;
+11. the adapter never fills missing fields from trajectory.
+
+## Session reuse and recovery
+
+For a reused session, the adapter reads the baseline assistant message IDs before sending the new task. Only terminal calls from new assistant messages can satisfy the current dispatch.
+
+Preferred source is the synchronous message response. If that response is empty or lacks the terminal call, the adapter may recover from the supported persisted session-message API while excluding baseline messages.
+
+Do not read OpenCode's SQLite database as the primary protocol source.
+
+## Agent selection
+
+OpenCode 1.18.x has a reported failure mode when the `agent` field is supplied directly on `POST /session/:id/message`. Delegent preserves `--agent` semantics by selecting the requested `default_agent` in the isolated server's runtime configuration instead of putting `agent` in the message body.
 
 ## Protocol errors
 
-If no valid handoff/escalation can be obtained from the supported session
-interface within the bounded completion window, return a compact adapter-level
-failure such as:
+Failures cross the boundary only as compact deterministic diagnostics:
 
 ```text
 WORKER_PROTOCOL_ERROR
@@ -194,74 +120,53 @@ exit_code: <when applicable>
 summary: <small deterministic diagnostic>
 ```
 
-Do not forward the entire raw Worker transcript to the Lead automatically.
-Specific diagnostic evidence may be inspected only when needed to repair the
-runtime boundary.
+Raw runtime exceptions, server logs, provider bodies, Worker prose, and tool trajectory must not be forwarded automatically.
 
 ## Security boundary
 
-The Worker adapter is security-sensitive because it may:
-
-- read the ignored credential configuration;
-- set provider credentials in process environment;
-- construct OpenCode configuration;
-- create/reuse/query durable Worker sessions;
-- parse and filter data crossing the Context Firewall.
+The adapter is Lead-owned security-sensitive code because it loads ignored provider credentials, builds runtime configuration, owns the authenticated loopback server, controls durable session storage, installs terminal tools, and filters data crossing the Context Firewall.
 
 Rules:
 
-- general build Workers must not autonomously rewrite credential-loading or
-  protocol-boundary code;
-- Workers may perform read-only diagnosis and propose a patch;
-- Lead owns or explicitly approves adapter mutations and performs final review;
-- credentials must never be interpolated into generated source, logs, handoffs,
-  tests, fixtures, or committed artifacts;
-- adapter tests should use fake credentials and a fake OpenCode executable,
-  mock server, or fixture responses whenever possible.
+- general build Workers may diagnose this boundary read-only but must not autonomously mutate it;
+- Lead owns or explicitly approves adapter mutations and final review;
+- credentials remain environment-only and must never be interpolated into source, fixtures, logs, tool files, handoffs, or committed artifacts;
+- terminal tools themselves are side-effect free and credential-blind;
+- deterministic tests use fake credentials and fake session/API responses before any live NIM call.
 
-## Local test-first requirement
+## Deterministic acceptance cases
 
-Before another remote Worker end-to-end test, the adapter implementation should
-pass local deterministic tests that do not call NVIDIA NIM.
+Before live validation, test at minimum:
 
-Minimum cases:
+1. valid `delegent_handoff` accepted;
+2. valid `delegent_decision` accepted;
+3. ordinary trajectory before the terminal call excluded;
+4. missing terminal tool rejected;
+5. missing argument rejected;
+6. unexpected argument rejected;
+7. duplicate terminal call rejected;
+8. handoff + decision together rejected;
+9. runtime/API failure deterministic and sanitized;
+10. timeout bounded and abort attempted;
+11. persisted-session recovery succeeds;
+12. stale reused-session terminal result rejected;
+13. sensitive content in trajectory remains hidden and sensitive content in terminal args is rejected;
+14. terminal tools install only into the Delegent-owned runtime config root;
+15. Worker message body contains no `format: json_schema` dependency and no direct `agent` field;
+16. `sessions`, `--session`, `--title`, `--agent`, and `--dir` compatibility remains intact;
+17. OpenCode server process ownership/cleanup remains bounded.
 
-1. valid structured eight-field handoff -> accepted and rendered alone;
-2. valid hard escalation -> accepted;
-3. tool/progress events before final result -> trajectory does not cross into
-   Lead handoff;
-4. missing terminal structured result -> `WORKER_PROTOCOL_ERROR`;
-5. malformed/missing field -> `WORKER_PROTOCOL_ERROR`;
-6. duplicate/ambiguous field representation -> `WORKER_PROTOCOL_ERROR`;
-7. runtime/API non-zero/error response -> deterministic runtime failure;
-8. timeout / session remains non-idle -> bounded failure, no indefinite hang;
-9. CLI JSON missing final text but persisted session contains the result ->
-   session-interface recovery succeeds;
-10. fake credential remains absent from generated files/output;
-11. session creation, title-based discovery/reuse, and scope/role behavior remain
-    compatible;
-12. existing `--session`, `--title`, `--agent`, and `--dir` user-facing wrapper
-    behavior remains compatible or receives a documented migration path.
+Only after deterministic tests pass should the real terminal-tool path be probed.
 
-Only after these local checks pass should the adapter be exercised against the
-real OpenCode/Nemotron runtime.
-
-## V0.1 acceptance impact
-
-The direct `plan` Worker path has demonstrated that Nemotron can return the
-compact contract, and the first full Delegent run demonstrated useful placement,
-fresh-review selection, and Lead rejection of bad Worker changes. The product
-loop is still blocked on a reliable runtime protocol.
-
-A successful next validation should demonstrate:
+## V0.1 acceptance target
 
 ```text
 Codex Lead
   -> Delegent placement
-  -> OpenCode session API / structured output
+  -> OpenCode/Nemotron normal tool path
+  -> terminal Delegent custom tool
   -> validated compact handoff
   -> Lead review/final acceptance
 ```
 
-without Lead-side ad-hoc regex parsing of raw OpenCode terminal output and
-without relying on CLI stdout as the sole record of Worker completion.
+No human terminal scraping and no raw Worker trajectory should be required for a successful delegation.
