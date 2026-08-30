@@ -53,6 +53,10 @@ if ($args.Count -gt 0 -and $args[0] -eq 'sessions') {
     exit $LASTEXITCODE
 }
 
+# Delegent requires its external terminal plugin. Never inherit OPENCODE_PURE
+# from the caller for Worker server runs because pure mode skips external plugins.
+$env:OPENCODE_PURE = 'false'
+
 # Keep the mature parsing/process/session helpers from Phase A, then override
 # only the Worker terminal-result transport with the normal-tool implementation.
 . (Join-Path $PSScriptRoot 'worker-protocol.ps1')
@@ -193,7 +197,9 @@ try {
 
     # Before spending a Worker inference call, prove that this exact OpenCode
     # server instance registered both terminal tools from the Delegent plugin.
-    # Keep this bounded and retry request-level timeouts during cold startup.
+    # A successful catalog response can arrive before external plugin hooks have
+    # finished registering; treat an incomplete catalog as "not ready yet" and
+    # retry within the same bounded bootstrap window.
     $bootstrapTimeoutSeconds = 60
     if ($env:DELEGENT_BOOTSTRAP_TIMEOUT_SECONDS) {
         $parsedBootstrapTimeout = 0
@@ -206,6 +212,7 @@ try {
 
     $catalogReady = $false
     $catalogTimedOut = $false
+    $catalogSawIncomplete = $false
     $catalogDeadline = [DateTime]::UtcNow.AddSeconds($bootstrapTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $catalogDeadline -and -not $server.HasExited) {
         $remainingSeconds = [int][Math]::Ceiling(($catalogDeadline - [DateTime]::UtcNow).TotalSeconds)
@@ -215,9 +222,9 @@ try {
             $toolIdsJson = & $request 'GET' '/experimental/tool/ids' $null $attemptTimeoutSeconds
             $toolIds = @(ConvertFrom-DelegentUniqueJson $toolIdsJson)
             if (-not (Test-DelegentTerminalToolCatalog $toolIds)) {
-                $result = New-DelegentTerminalCatalogError -Kind terminal_tools_unavailable
-                Write-Output $result.Output
-                exit $result.ExitCode
+                $catalogSawIncomplete = $true
+                Start-Sleep -Milliseconds 100
+                continue
             }
             $catalogReady = $true
             break
@@ -235,7 +242,15 @@ try {
     }
 
     if (-not $catalogReady) {
-        $kind = if ($catalogTimedOut) { 'terminal_tool_bootstrap_timeout' } else { 'terminal_tool_catalog_error' }
+        $kind = if ($catalogSawIncomplete) {
+            'terminal_tools_unavailable'
+        }
+        elseif ($catalogTimedOut) {
+            'terminal_tool_bootstrap_timeout'
+        }
+        else {
+            'terminal_tool_catalog_error'
+        }
         $result = New-DelegentTerminalCatalogError -Kind $kind
         Write-Output $result.Output
         exit $result.ExitCode
