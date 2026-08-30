@@ -6,6 +6,24 @@ $script:DelegentDecisionToolFields = @(
     'confidence'
 )
 
+function Install-DelegentTerminalTools {
+    param(
+        [string]$SkillRoot,
+        [string]$ConfigRoot
+    )
+
+    $toolTarget = Join-Path $ConfigRoot 'opencode\tools'
+    New-Item -ItemType Directory -Force -Path $toolTarget -ErrorAction Stop | Out-Null
+    foreach ($toolName in @('delegent_handoff.ts', 'delegent_decision.ts')) {
+        $source = Join-Path (Join-Path $SkillRoot 'tools') $toolName
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw [IO.FileNotFoundException]::new('Missing Delegent terminal tool.')
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $toolTarget $toolName) -Force -ErrorAction Stop
+    }
+    return $toolTarget
+}
+
 function Get-DelegentTerminalResult {
     param([object]$Message)
 
@@ -116,10 +134,10 @@ function Invoke-DelegentWorkerProtocol {
         }
     }
 
-    # Do not use OpenCode's special format=json_schema path here. Live testing on
-    # OpenCode 1.18.25 showed that path fails while ordinary tool calling through
-    # the same OpenCode/NVIDIA/Nemotron stack succeeds. The terminal contract is
-    # carried by the dedicated Delegent custom tools instead.
+    # Live testing on OpenCode 1.18.25 showed that format=json_schema fails in
+    # this stack while ordinary OpenCode and direct Nemotron named-tool calls
+    # succeed. Keep the runtime on the normal tool path and read only the
+    # dedicated terminal-tool inputs from the returned session message.
     $body = [ordered]@{
         model = @{ providerID = 'nvidia'; modelID = 'nvidia/nemotron-3-super-120b-a12b' }
         parts = @(@{ type = 'text'; text = $Invocation.Prompt })
