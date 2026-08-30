@@ -56,6 +56,7 @@ if ($args.Count -gt 0 -and $args[0] -eq 'sessions') {
 # only the Worker terminal-result transport with the normal-tool implementation.
 . (Join-Path $PSScriptRoot 'worker-protocol.ps1')
 . (Join-Path $PSScriptRoot 'worker-terminal-protocol.ps1')
+. (Join-Path $PSScriptRoot 'worker-terminal-catalog.ps1')
 
 try {
     $invocation = Get-DelegentWorkerInvocation $args
@@ -169,6 +170,24 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if (-not $healthy) { throw 'OpenCode server did not become healthy.' }
+
+    # Before spending a Worker inference call, prove that this exact OpenCode
+    # server instance discovered both Delegent terminal tools. OpenCode 1.18.25
+    # exposes dynamically registered tool IDs through this endpoint.
+    try {
+        $toolIdsJson = & $request 'GET' '/experimental/tool/ids' $null 5
+        $toolIds = @(ConvertFrom-DelegentUniqueJson $toolIdsJson)
+        if (-not (Test-DelegentTerminalToolCatalog $toolIds)) {
+            $result = New-DelegentTerminalToolsUnavailableError
+            Write-Output $result.Output
+            exit $result.ExitCode
+        }
+    }
+    catch {
+        $result = New-DelegentProtocolError -Kind runtime_output_error
+        Write-Output $result.Output
+        exit $result.ExitCode
+    }
 
     $timeoutSeconds = 300
     if ($env:DELEGENT_TIMEOUT_SECONDS) {

@@ -16,3 +16,4 @@ jobs:
         run: |
           $PSVersionTable.PSVersion
           powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-worker-protocol.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\evals\test-terminal-tool-catalog.ps1

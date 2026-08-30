@@ -11,9 +11,9 @@ Delegent remains workflow-agnostic. Matt Pocock's `implement` workflow is a late
 ```text
 A. Worker protocol — fake/local                         PASS (initial structured design)
 A.5 Live compatibility isolation                       PASS/isolated blocker
-A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 Windows PowerShell 5.1)
-A.7 Live terminal-tool Worker probe                    NEXT
-B. Controlled Delegent composition
+A.6 Terminal-tool protocol implementation + fake tests PASS (18/18 + catalog invariant tests)
+A.7 Live terminal-tool Worker probe                    BLOCKED (first live call: missing_terminal_handoff)
+B. Controlled Delegent composition                     WAITING ON A.7
    B1 trivial Lead-owned routing
    B2 controlled delegated routing
 C. Matt implement integration (+ tdd/code-review)
@@ -87,22 +87,45 @@ Deterministic acceptance covers:
 - terminal-tool runtime installation;
 - no `format: json_schema` or direct `agent` field in Worker message body;
 - wrapper flag/session compatibility;
-- server lifecycle cleanup.
+- server lifecycle cleanup;
+- terminal-tool catalog validation and deterministic unavailable-tool error.
 
-Final local result:
+Final local/CI result before the first A.7 call:
 
 ```text
 Windows PowerShell 5.1
 PASS 18/18
 ```
 
-The suite is also retained as a Windows GitHub Actions regression check. During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
+The suite is retained as a Windows GitHub Actions regression check. During test-harness debugging, the apparent 12/18 failure was traced to fixture parameters named `$Input` (and defensively `$Error`), which collide with PowerShell automatic variables. Renaming them to `$ToolInput` and `$ResponseError` fixed the fixtures without relaxing or changing the production protocol validator.
+
+After the first A.7 failure, a separate deterministic catalog invariant was added. The wrapper now queries OpenCode's runtime `GET /experimental/tool/ids` endpoint before any Worker inference call and requires both `delegent_handoff` and `delegent_decision` to be registered. The catalog helper has its own fake-only regression cases in `evals/test-terminal-tool-catalog.ps1`.
 
 No real NIM call is needed for these deterministic tests.
 
 ## Phase A.7 — live terminal-tool probe
 
-A.6 has passed. Run one bounded read-only Worker call through the wrapper.
+The first live terminal-tool call passed preflight but returned:
+
+```text
+WORKER_PROTOCOL_ERROR
+kind: missing_terminal_handoff
+session_id: ses_fad1d4ebbffer6qn1CM3aLB22z
+exit_code: none
+summary: Supported session sources contained no terminal structured result.
+```
+
+This proves the wrapper/server/session path returned deterministically, but the first run did not prove whether the Delegent custom tools had been discovered by the live OpenCode process or whether the model simply ended without calling one.
+
+The runtime catalog invariant added after that failure removes this ambiguity on the next call:
+
+- `terminal_tools_unavailable` means the live OpenCode process did not register both required Delegent tools; stop and fix discovery/loading before another Worker call.
+- `missing_terminal_handoff` after the catalog invariant means both terminal tool IDs were registered before inference, but no completed terminal tool call appeared in the returned or recovered assistant messages. At that point investigate the normal-tool/model behavior rather than the installation path.
+- a compact eight-field handoff means A.7 passes.
+
+OpenCode 1.18.25's normal message path leaves tool choice to the provider/model; its special `format: json_schema` path is the path that explicitly requires a tool call, and that special path is already known to fail in this stack. Do not re-enable it merely to force a terminal call.
+
+Rerun one bounded read-only Worker call through the wrapper after syncing the catalog-invariant commit.
 
 From the repository root:
 
