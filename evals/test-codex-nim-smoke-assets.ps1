@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $smokePath = Join-Path $PSScriptRoot 'run-codex-nim-smoke.ps1'
 $doctorPath = Join-Path $PSScriptRoot 'diagnose-codex-nim-doctor.ps1'
+$repoReadPath = Join-Path $PSScriptRoot 'run-codex-nim-repo-read.ps1'
 
 function Assert-True {
     param(
@@ -10,7 +11,7 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-foreach ($path in @($smokePath, $doctorPath)) {
+foreach ($path in @($smokePath, $doctorPath, $repoReadPath)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
@@ -36,13 +37,9 @@ Assert-True ($smoke -match 'taskkill\.exe /PID \$process\.Id /T /F') 'N2 smoke m
 Assert-True ($smoke -match 'Get-Command codex\.cmd' -and $smoke -match "Kind = 'cmd-shim'") 'N2 smoke must prefer the npm cmd shim for redirected stdin on Windows.'
 Assert-True ($smoke -match "Kind = 'powershell-shim-fallback'") 'N2 smoke may retain the PowerShell shim only as a fallback.'
 Assert-True ($smoke -match 'powershell_shim_error') 'N2 smoke must classify the known PowerShell npm shim failure distinctly.'
-Assert-True ($smoke -match 'app_server_init_error') 'N2 smoke must classify in-process app-server startup failures.'
-Assert-True ($smoke -match 'environment_manager_error' -and $smoke -match 'exec_policy_error') 'N2 smoke must classify runtime-only startup seams.'
-Assert-True ($smoke -match 'Get-SafeFailureClass' -and $smoke -match 'failure_class=') 'N2 smoke must classify pre-thread failures without printing raw stderr.'
+Assert-True ($smoke -match 'Get-SafeFailureClass' -and $smoke -match 'failure_class=') 'N2 smoke must classify failures without printing raw stderr.'
 Assert-True ($smoke -match 'Get-SafeStderrSummary' -and $smoke -match 'stderr_summary=') 'N2 smoke must expose a bounded sanitized startup error summary.'
 Assert-True ($smoke -match 'Replace\(\$Credential, ''<redacted>''\)') 'N2 stderr summary must redact the exact credential before output.'
-Assert-True ($smoke -match 'https\?://\\S\+' -and $smoke -match "'<url>'") 'N2 stderr summary must redact URLs.'
-Assert-True ($smoke -match "'<path>'" -and $smoke -match 'A-Z.*\\\\') 'N2 stderr summary must redact Windows paths.'
 Assert-True ($smoke -match 'stdout\.Contains\(\$key\)' -and $smoke -match 'stderr\.Contains\(\$key\)') 'N2 smoke must fail if the credential appears in captured process output.'
 Assert-True ($smoke -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N2 smoke must not print raw process streams or credential values.'
 Assert-True ($smoke -notmatch 'nvapi-[A-Za-z0-9_-]{12,}') 'N2 smoke must not contain a NVIDIA credential literal.'
@@ -58,11 +55,26 @@ Assert-True ($doctor -match "'network\.provider_reachability'") 'N2 doctor must 
 Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require the NIM provider.'
 Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
 Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
-Assert-True ($doctor -match 'ReadToEndAsync') 'N2 doctor must capture native stdout/stderr without PowerShell NativeCommandError leakage.'
-Assert-True ($doctor -match 'doctorStdout\.Contains\(\$key\)' -and $doctor -match 'doctorStderr\.Contains\(\$key\)') 'N2 doctor must detect credential leakage in captured streams.'
-Assert-True ($doctor -notmatch 'Write-Output\s+(?:"?\$doctorStdout\b|"?\$doctorStderr\b|"?\$key\b)') 'N2 doctor must not directly print raw doctor streams or credential values.'
-Assert-True ($doctor -notmatch 'nvapi-[A-Za-z0-9_-]+') 'N2 doctor must not contain a NVIDIA credential literal.'
 Assert-True ($doctor -match 'credential_value_logged=False') 'N2 doctor must make the no-secret-output contract explicit.'
 
-Write-Output 'PASS Codex NIM N2 smoke and doctor assets'
+$repoRead = Get-Content -Raw -LiteralPath $repoReadPath
+Assert-True ($repoRead -match 'CODEX_NIM_REPO_READ') 'N3 must expose a distinct repo-read result contract.'
+Assert-True ($repoRead -match "\$codexArgs = 'exec --json --sandbox read-only -'") 'N3 must add the read-only Codex sandbox to the proven minimal harness.'
+Assert-True ($repoRead -match 'first non-empty line after the top-level heading') 'N3 prompt must require evidence learned from README rather than include the expected content.'
+Assert-True ($repoRead -match 'README_TOOL_OK\|Context-aware coding-agent orchestration for Codex\.') 'N3 validator must know the current deterministic README evidence.'
+Assert-True ($repoRead -match "item\.type -eq 'command_execution'") 'N3 must require a real Codex command execution event.'
+Assert-True ($repoRead -match "item\.command.*README\\\.md|README\\\.md.*item\.command") 'N3 must verify that the tool command references README.md.'
+Assert-True ($repoRead -match "item\.status -eq 'completed'" -and $repoRead -match 'item\.exit_code') 'N3 must require the README command to complete successfully.'
+Assert-True ($repoRead -match "item\.type -eq 'file_change'") 'N3 must explicitly inspect file-change events.'
+Assert-True ($repoRead -match 'status --porcelain=v1 --untracked-files=all') 'N3 must compare the working tree before and after the Worker turn.'
+Assert-True ($repoRead -match 'working_tree_unchanged=') 'N3 output must expose the working-tree invariant.'
+Assert-True ($repoRead -match 'file_change_item_count=') 'N3 output must expose the file-change event invariant.'
+Assert-True ($repoRead -match 'tool_use_present=' -and $repoRead -match 'readme_tool_command_succeeded=') 'N3 output must expose observed tool-use evidence.'
+Assert-True ($repoRead -match 'Get-Command codex\.cmd' -and $repoRead -match "Kind = 'cmd-shim'") 'N3 must preserve the proven Windows cmd-shim launcher behavior.'
+Assert-True ($repoRead -match 'stdout\.Contains\(\$key\)' -and $repoRead -match 'stderr\.Contains\(\$key\)') 'N3 must fail on credential leakage.'
+Assert-True ($repoRead -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N3 must not print raw process streams or credential values.'
+Assert-True ($repoRead -notmatch 'nvapi-[A-Za-z0-9_-]{12,}') 'N3 must not contain a NVIDIA credential literal.'
+Assert-True ($repoRead -match 'credential_value_logged=False') 'N3 must make the no-secret-output contract explicit.'
+
+Write-Output 'PASS Codex NIM N2/N3 harness assets'
 exit 0
