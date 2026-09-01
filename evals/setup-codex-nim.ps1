@@ -53,9 +53,19 @@ $safeModel = ConvertTo-TomlBasicString $Model
 # can select the Worker model/provider directly. Avoiding a profile removes an
 # unnecessary config layer and lets `codex exec` and `codex doctor` inspect the
 # exact same effective configuration.
+#
+# On Codex 0.151.0 for Windows, an unspecified Windows sandbox backend resolves
+# to Disabled even when the turn uses a restricted permission profile. In
+# non-interactive `codex exec`, exec-policy then rejects otherwise-benign
+# unmatched commands because there is no enforceable Windows sandbox and no
+# approval prompt. Explicit unelevated mode maps to RestrictedToken and keeps
+# the Worker inside Codex's managed Windows sandbox.
 $configText = @"
 model = "$safeModel"
 model_provider = "nim"
+
+[windows]
+sandbox = "unelevated"
 
 [model_providers.nim]
 name = "NVIDIA NIM"
@@ -79,6 +89,7 @@ Write-Output "config_path=$configPath"
 Write-Output "base_url=$normalizedBaseUrl"
 Write-Output "model=$Model"
 Write-Output 'model_provider=nim'
+Write-Output 'windows_sandbox=unelevated'
 Write-Output 'config_mode=isolated-default'
 Write-Output 'profile_required=False'
 Write-Output "stale_profile_removed=$([bool]$staleProfileRemoved)"
