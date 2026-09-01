@@ -52,8 +52,12 @@ Assert-True ($doctor -notmatch '-p nim-worker doctor') 'N2 doctor must not use -
 Assert-True ($doctor -match "'config\.load'") 'N2 doctor must inspect config.load.'
 Assert-True ($doctor -match "'auth\.credentials'") 'N2 doctor must inspect auth.credentials.'
 Assert-True ($doctor -match "'network\.provider_reachability'") 'N2 doctor must inspect provider reachability.'
+Assert-True ($doctor -match "'sandbox\.helpers'") 'N2/N3 preflight doctor must inspect the effective sandbox backend.'
+Assert-True ($doctor -match 'Get-DetailLineValue') 'Doctor must safely parse sandbox detail lines without printing the full report.'
 Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require the NIM provider.'
 Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
+Assert-True ($doctor -match 'RestrictedToken\|Elevated') 'Doctor must require an enabled Windows sandbox backend for the Worker.'
+Assert-True ($doctor -match 'sandbox_backend=' -and $doctor -match 'windows_sandbox_enabled=') 'Doctor output must expose the effective Windows sandbox backend.'
 Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
 Assert-True ($doctor -match 'credential_value_logged=False') 'N2 doctor must make the no-secret-output contract explicit.'
 
