@@ -111,6 +111,25 @@ function Get-DetailValue {
     return $null
 }
 
+function Get-DetailLineValue {
+    param(
+        [object]$Check,
+        [string[]]$Names
+    )
+
+    if ($null -eq $Check -or $null -eq $Check.details) { return $null }
+    foreach ($detail in @($Check.details)) {
+        $text = [string]$detail
+        foreach ($name in $Names) {
+            $prefix = $name + ':'
+            if ($text.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return $text.Substring($prefix.Length).Trim()
+            }
+        }
+    }
+    return $null
+}
+
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     if ($env:LOCALAPPDATA) {
         $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'agent-delegation-skills\codex-nim'
@@ -212,14 +231,19 @@ if (-not [string]::IsNullOrWhiteSpace($doctorStdout)) {
 $configCheck = Get-DoctorCheck -Report $report -Id 'config.load'
 $authCheck = Get-DoctorCheck -Report $report -Id 'auth.credentials'
 $reachabilityCheck = Get-DoctorCheck -Report $report -Id 'network.provider_reachability'
+$sandboxCheck = Get-DoctorCheck -Report $report -Id 'sandbox.helpers'
 
 $activeModel = Get-DetailValue -Check $configCheck -Names @('model')
 $activeProvider = Get-DetailValue -Check $configCheck -Names @('model provider', 'model_provider')
 $providerEnv = Get-DetailValue -Check $authCheck -Names @('provider auth env var', 'provider_auth_env_var')
+$sandboxBackend = Get-DetailLineValue -Check $sandboxCheck -Names @('sandbox backend')
+$approvalPolicy = Get-DetailLineValue -Check $sandboxCheck -Names @('approval policy')
+$filesystemSandbox = Get-DetailLineValue -Check $sandboxCheck -Names @('filesystem sandbox')
 
 $configStatus = if ($null -eq $configCheck) { 'missing' } else { [string]$configCheck.status }
 $authStatus = if ($null -eq $authCheck) { 'missing' } else { [string]$authCheck.status }
 $reachabilityStatus = if ($null -eq $reachabilityCheck) { 'missing' } else { [string]$reachabilityCheck.status }
+$sandboxStatus = if ($null -eq $sandboxCheck) { 'missing' } else { [string]$sandboxCheck.status }
 $providerEnvPresent = $false
 if (-not [string]::IsNullOrWhiteSpace($providerEnv)) {
     $providerEnvPresent = $providerEnv -match '(?i)present'
@@ -229,6 +253,7 @@ $expectedModel = 'nvidia/nemotron-3-super-120b-a12b'
 $configLoaded = $configStatus -match '^(?i:ok)$'
 $providerSelected = $activeProvider -ceq 'nim'
 $modelSelected = $activeModel -ceq $expectedModel
+$windowsSandboxEnabled = $sandboxBackend -match '^(?i:RestrictedToken|Elevated)$'
 $doctorSucceeded = (-not $timedOut -and $doctorExitCode -eq 0 -and $decodeOk)
 $overallPass = (
     $doctorSucceeded -and
@@ -236,6 +261,7 @@ $overallPass = (
     $providerSelected -and
     $modelSelected -and
     $providerEnvPresent -and
+    $windowsSandboxEnabled -and
     -not $credentialLeakDetected
 )
 
@@ -259,6 +285,11 @@ Write-Output "model_selected=$([bool]$modelSelected)"
 Write-Output "auth_status=$authStatus"
 Write-Output "provider_env_present=$([bool]$providerEnvPresent)"
 Write-Output "reachability_status=$reachabilityStatus"
+Write-Output "sandbox_status=$sandboxStatus"
+Write-Output "sandbox_backend=$(if ([string]::IsNullOrWhiteSpace($sandboxBackend)) { 'missing' } else { $sandboxBackend })"
+Write-Output "windows_sandbox_enabled=$([bool]$windowsSandboxEnabled)"
+Write-Output "approval_policy=$(if ([string]::IsNullOrWhiteSpace($approvalPolicy)) { 'missing' } else { $approvalPolicy })"
+Write-Output "filesystem_sandbox=$(if ([string]::IsNullOrWhiteSpace($filesystemSandbox)) { 'missing' } else { $filesystemSandbox })"
 Write-Output "stderr_present=$([bool](-not [string]::IsNullOrWhiteSpace($doctorStderr)))"
 Write-Output "credential_leak_detected=$([bool]$credentialLeakDetected)"
 Write-Output "overall=$(if ($overallPass) { 'PASS' } else { 'FAIL' })"
