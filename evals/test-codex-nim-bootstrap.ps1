@@ -25,6 +25,8 @@ Assert-True ($setup -match 'env_key = "NIM_API_KEY"') 'Setup must use an environ
 Assert-True ($setup -match 'wire_api = "responses"') 'Setup must use the Responses wire API.'
 Assert-True ($setup -match 'model_provider = "nim"') 'Isolated Worker config must select the NIM provider directly.'
 Assert-True ($setup -match 'model = "\$safeModel"') 'Isolated Worker config must select the requested Nemotron model directly.'
+Assert-True ($setup -match '\[windows\]' -and $setup -match 'sandbox = "unelevated"') 'Windows Worker config must explicitly enable the RestrictedToken sandbox backend.'
+Assert-True ($setup -match 'windows_sandbox=unelevated') 'Setup output must expose the Windows sandbox mode.'
 Assert-True ($setup -match 'config_mode=isolated-default') 'Setup output must identify the isolated default-config mode.'
 Assert-True ($setup -match 'profile_required=False') 'Setup must make clear that a profile is not required in the dedicated Worker CODEX_HOME.'
 Assert-True ($setup -match 'Remove-Item -LiteralPath \$staleProfilePath') 'Setup must remove stale generated profile state from earlier experiments.'
