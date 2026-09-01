@@ -97,6 +97,7 @@ function Get-SafeFailureClass {
 
     if (-not [string]::IsNullOrWhiteSpace($CapturedStderr)) {
         if ($CapturedStderr -match '(?i)`justification` requires an explicit `sandbox_permissions`') { return 'tool_argument_error' }
+        if ($CapturedStderr -match '(?i)rejected:\s*blocked by policy') { return 'exec_policy_blocked' }
         if ($CapturedStderr -match '(?i)exec_command failed for' -and $CapturedStderr -match '(?i)(CreateProcess|Failed to create unified exec process|Unified exec process failed|ProcessFailed|CreateProcessAsUserW|helper[_ -].*error)') { return 'windows_sandbox_process_error' }
         if ($CapturedStderr -match '(?i)exec_command failed for') { return 'command_tool_error' }
         if ($CapturedStderr -match '(?i)(PSArgumentException|FullyQualifiedErrorId\s*:\s*Argument,codex\.ps1|\[codex\.ps1\])') { return 'powershell_shim_error' }
@@ -207,7 +208,7 @@ try {
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $task = 'Read only README.md from the current repository. Use exec_command exactly once. For that call, set cmd to "Get-Content -LiteralPath README.md -TotalCount 3" and set sandbox_permissions to "use_default". Omit justification, prefix_rule, additional_permissions, workdir, shell, tty, login, yield_time, and max-output fields. Do not request escalation. Do not modify any file. From the command output, find the first non-empty line after the top-level heading. Reply exactly as README_TOOL_OK|<that exact line>, with no additional text.'
+    $task = 'Read only README.md from the current repository. Use exec_command exactly once. For that call, set cmd to "Get-Content -LiteralPath README.md -TotalCount 3" and set sandbox_permissions to "use_default". Omit justification, prefix_rule, additional_permissions, workdir, shell, tty, login, yield-time, and max-output fields. Do not request escalation. Do not modify any file. From the command output, find the first non-empty line after the top-level heading. Reply exactly as README_TOOL_OK|<that exact line>, with no additional text.'
     $process.StandardInput.WriteLine($task)
     $process.StandardInput.Close()
 
@@ -256,7 +257,8 @@ if ($agentMessagePresent) { $agentMessageExact = ([string]$agentMessages[$agentM
 
 $invalidToolArgsSeen = $stderr -match '(?i)`justification` requires an explicit `sandbox_permissions`'
 $execCommandFailedSeen = $stderr -match '(?i)exec_command failed for'
-$windowsProcessFailureSeen = $stderr -match '(?i)(CreateProcess|Failed to create unified exec process|Unified exec process failed|ProcessFailed|CreateProcessAsUserW|helper[_ -].*error)'
+$execPolicyBlockedSeen = $stderr -match '(?i)rejected:\s*blocked by policy'
+$windowsProcessFailureSeen = (-not $execPolicyBlockedSeen) -and ($stderr -match '(?i)(CreateProcess|Failed to create unified exec process|Unified exec process failed|ProcessFailed|CreateProcessAsUserW|helper[_ -].*error)')
 $credentialLeakDetected = $false
 if (-not [string]::IsNullOrEmpty($key)) { $credentialLeakDetected = $stdout.Contains($key) -or $stderr.Contains($key) }
 $failureClass = Get-SafeFailureClass -CapturedStderr $stderr -ProcessExitCode $exitCode
@@ -303,6 +305,7 @@ Write-Output "process_exit_code=$exitCodeText"
 Write-Output "failure_class=$failureClass"
 Write-Output "invalid_tool_args_seen=$([bool]$invalidToolArgsSeen)"
 Write-Output "exec_command_failed_seen=$([bool]$execCommandFailedSeen)"
+Write-Output "exec_policy_blocked_seen=$([bool]$execPolicyBlockedSeen)"
 Write-Output "windows_process_failure_seen=$([bool]$windowsProcessFailureSeen)"
 Write-Output "stderr_summary=$stderrSummary"
 Write-Output "jsonl_line_count=$($lines.Count)"
