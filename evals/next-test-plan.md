@@ -45,8 +45,8 @@ N0  Codex/NIM baseline + isolated CODEX_HOME            PASS
 N1  Hosted NIM Responses compatibility                  PASS
 N2a Codex config/auth/provider doctor                    PASS
 N2b Minimal `codex exec` Nemotron Worker                PASS
-N3  Real Codex repository tool use                      NEXT
-N4  Deterministic terminal handoff via --output-schema
+N3  Real Codex repository tool use                      PASS
+N4  Deterministic terminal handoff via --output-schema  NEXT
 N5  Codex Worker session resume / continuity
 N6  Controlled mutation + verifier
 N7  Production-candidate Codex/NIM adapter
@@ -170,6 +170,35 @@ credential_value_logged=False
 
 This proves config loading, model selection, provider selection, credential discovery, and provider reachability.
 
+The doctor now also gates the Windows sandbox backend, re-verified 2026-09-03:
+
+```text
+codex_launcher=cmd-shim
+sandbox_status=ok
+sandbox_backend_class=enabled-redacted
+windows_sandbox_enabled=True
+approval_policy=OnRequest
+filesystem_sandbox=restricted
+network_sandbox=restricted
+overall=PASS
+model_inference_used=false
+```
+
+`sandbox_backend_class` replaces the earlier raw `sandbox_backend` field, which
+could never satisfy a `RestrictedToken|Elevated` match because Codex redacts an
+enabled backend's name. The classes are `disabled`, `enabled-redacted`,
+`enabled-<name>`, `missing`, and `unrecognized`; only an `enabled*` class passes.
+
+Two defects were fixed here on 2026-09-03, both of which made this gate report a
+false negative while the runtime was actually healthy:
+
+- `checks.<id>.details` is a JSON **object**, not an array of `"name: value"`
+  strings, so the line-oriented detail parser returned `missing` for every
+  sandbox field. All details are now read by name.
+- `Get-Command codex` resolves `codex.ps1` ahead of `codex.cmd` on this PATH, so
+  the doctor was launching through the known-unsafe npm PowerShell shim. It now
+  probes `codex.exe` -> `codex.cmd` -> `codex.ps1`, matching every other probe.
+
 ### N2b — minimal `codex exec` — PASS
 
 `evals/run-codex-nim-smoke.ps1` now uses the minimal proven harness:
@@ -243,7 +272,7 @@ codex_launcher=cmd-shim
 
 Therefore the earlier N2 failures must **not** be interpreted as Codex/NIM runtime incompatibility.
 
-## N3 — real repository tool use — NEXT
+## N3 — real repository tool use — PASS
 
 Use:
 
@@ -278,9 +307,110 @@ no credential leakage
 
 This gate proves that Nemotron is not merely answering through Codex; it can actually use Codex's repository execution path under a read-only sandbox while preserving the tree.
 
-## N4 — deterministic terminal handoff
+### N3 live result — 2026-09-03 — PASS
 
-After N3 passes, evaluate Codex-native `--output-schema` as the machine boundary.
+```text
+codex_version=codex-cli 0.151.0
+codex_launcher=cmd-shim
+process_exit_code=0
+failure_class=none
+invalid_tool_args_seen=False
+exec_policy_blocked_seen=False
+windows_process_failure_seen=False
+jsonl_decode_errors=0
+turn_completed=True
+turn_failed=False
+command_execution_count=1
+readme_tool_command_succeeded=True
+file_change_item_count=0
+working_tree_unchanged=True
+agent_message_exact=True
+credential_leak_detected=False
+overall=PASS
+```
+
+The Worker turn ran under an enforced sandbox, confirmed from the session
+rollout rather than inferred:
+
+```text
+approval_policy = never
+sandbox_policy  = {"type": "read-only"}
+```
+
+So the open question from the N3b blocker is answered: Codex 0.151.0 on this
+Windows machine *can* execute the required benign repository command under an
+enforceable managed sandbox with non-interactive exec-policy.
+
+### Why the Windows sandbox fix works — zero-inference differential
+
+`codex doctor` reports the Windows backend, and the two arms differ only by the
+`[windows]` block in the isolated Worker config:
+
+```text
+no [windows] sandbox key   -> sandbox backend = disabled
+sandbox = "unelevated"     -> sandbox backend = <redacted>
+```
+
+This is the confirmation of the original hypothesis: an unspecified Windows
+backend resolves to `disabled`, and a restricted permission profile with no
+enforceable sandbox makes non-interactive exec-policy reject benign unmatched
+commands because no approval prompt exists.
+
+Two Codex 0.151.0 quirks matter for any future diagnostic:
+
+- `codex doctor --json` is documented as "Emit a redacted machine-readable
+  report". `sandbox.helpers -> sandbox backend` is one of only two redacted
+  fields, and the human report redacts it too. The concrete backend name is
+  therefore **not observable**, so the backend can only be gated negatively
+  against `disabled`. Asserting `RestrictedToken|Elevated` can never pass.
+- `filesystem sandbox` and `network sandbox` both read `restricted` in *both*
+  arms. They reflect the requested policy, not the backend, so neither
+  discriminates an enabled backend from a disabled one. Do not gate on them.
+
+### Known non-fatal stream conditions
+
+Both live probes classify error-typed JSONL entries instead of treating any of
+them as a turn failure. Two conditions are expected and are reported rather than
+swallowed:
+
+```text
+model_metadata_fallback_seen   -> "Model metadata for `nvidia/nemotron-3-super-120b-a12b`
+                                  not found. Defaulting to fallback metadata"
+provider_retry_notice_count    -> "Reconnecting... n/5 (...)"
+provider_model_not_found_seen  -> a retry whose cause was 404 Model not found
+```
+
+The fallback-metadata notice arrives on **every** turn, because a custom NIM
+model is never in Codex's model catalog. Observed fallback context window is
+`258400`. Pinning `model_context_window` is deferred: the hosted NIM
+`/v1/models` response carries only `id`/`object`/`created`/`owned_by`, so no
+authoritative Nemotron context length is available yet, and guessing one is
+worse than the documented fallback. Revisit before N5/N6 grow long Worker
+threads.
+
+The retry notices are provider weather. One observed N2b run needed four
+retries, twice because the hosted endpoint answered a valid model id with
+`404 Model not found` and twice on a dropped response stream; the turn still
+completed with the exact expected answer, and the next two runs needed zero
+retries. Retry rate is a reliability input for the N8 bake-off, not a gate
+failure — the gate still depends on `turn.completed` plus the exact answer, and
+any *unrecognized* stream error still fails it.
+
+That last property is the risk in tolerating any notice at all, so it is pinned
+by a deterministic CI test rather than left to review:
+
+```text
+evals/test-codex-nim-stream-error-classifier.ps1
+```
+
+It extracts the classifier verbatim from the shipping probe, requires both live
+probes to share one implementation, and runs it over the two real observed
+streams plus negative controls — an unrecognized error, an explicit
+`turn.failed`, a de-duplicated error item, and a clean stream.
+
+## N4 — deterministic terminal handoff — NEXT
+
+Now that N3 passes, evaluate Codex-native `--output-schema` as the machine boundary.
 
 Normal handoff remains exactly:
 
@@ -362,7 +492,7 @@ Current status:
 
 ```text
 Delegent core      = accepted
-Codex+NIM runtime  = preferred candidate; N2 proven, N3 next
+Codex+NIM runtime  = preferred candidate; N0-N3 proven, N4 next
 OpenCode runtime   = frozen baseline/fallback
 ```
 
@@ -407,11 +537,33 @@ Before any real Worker call:
 
 Do not run another OpenCode A.7.
 
-N2b has passed. Run N3:
+N3 has passed, so the Windows sandbox / exec-policy investigation is closed. Do
+not reopen it, and do not spend further time on
+`diagnose-codex-windows-sandbox.ps1` or
+`diagnose-codex-powershell-profile-gap.ps1`; both are retained only as
+regression controls.
+
+Start N4 — Codex-native `--output-schema` as the machine boundary:
+
+```text
+Nemotron Worker
+-> Codex native tools
+-> --output-schema
+-> exact Delegent handoff
+-> adapter exact validation + sensitive filtering
+-> Lead
+```
+
+Prompt-only JSON is not an acceptable fallback for the terminal handoff.
+
+Before starting, re-confirm the proven layers still hold on the current machine
+(both are fast and both must stay green):
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\diagnose-codex-nim-doctor.ps1
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-codex-nim-repo-read.ps1
 ```
 
-Do not integrate Codex/NIM into `$delegent` routing yet. N3, N4, N5, and N6 must pass first.
+Do not integrate Codex/NIM into `$delegent` routing yet. N4, N5, and N6 must pass first.

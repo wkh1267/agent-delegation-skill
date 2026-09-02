@@ -53,11 +53,20 @@ Assert-True ($doctor -match "'config\.load'") 'N2 doctor must inspect config.loa
 Assert-True ($doctor -match "'auth\.credentials'") 'N2 doctor must inspect auth.credentials.'
 Assert-True ($doctor -match "'network\.provider_reachability'") 'N2 doctor must inspect provider reachability.'
 Assert-True ($doctor -match "'sandbox\.helpers'") 'N2/N3 preflight doctor must inspect the effective sandbox backend.'
-Assert-True ($doctor -match 'Get-DetailLineValue') 'Doctor must safely parse sandbox detail lines without printing the full report.'
+Assert-True ($doctor -match 'Get-DetailValue -Check \$sandboxCheck') 'Doctor must read object-shaped sandbox details by name.'
+Assert-True ($doctor -notmatch 'Get-DetailLineValue') 'Doctor must not parse object-shaped details as "name: value" lines.'
 Assert-True ($doctor -match "activeProvider -ceq 'nim'") 'N2 doctor must require the NIM provider.'
 Assert-True ($doctor -match "expectedModel = 'nvidia/nemotron-3-super-120b-a12b'") 'N2 doctor must require the intended Nemotron model.'
-Assert-True ($doctor -match 'RestrictedToken\|Elevated') 'Doctor must require an enabled Windows sandbox backend for the Worker.'
-Assert-True ($doctor -match 'sandbox_backend=' -and $doctor -match 'windows_sandbox_enabled=') 'Doctor output must expose the effective Windows sandbox backend.'
+Assert-True ($doctor -match 'Get-SandboxBackendClass') 'Doctor must classify the sandbox backend rather than string-match a name Codex redacts.'
+Assert-True ($doctor -match "'\^\(\?i:disabled\|none\|off\)\$'") 'Doctor must recognize the disabled backend that caused the exec-policy rejection.'
+Assert-True ($doctor -match "\`$value -ceq '<redacted>'") 'Doctor must treat the redacted backend name as an enabled backend.'
+Assert-True ($doctor -match "\`$windowsSandboxEnabled = \`$sandboxBackendClass -like 'enabled\*'") 'Doctor must gate the Windows sandbox negatively against the disabled backend.'
+Assert-True ($doctor -notmatch '\$windowsSandboxEnabled = \$(filesystemSandbox|networkSandbox)') 'Doctor must not gate on policy fields that do not discriminate the backend.'
+Assert-True ($doctor -match 'sandbox_backend_class=' -and $doctor -match 'windows_sandbox_enabled=') 'Doctor output must expose the effective Windows sandbox backend class.'
+Assert-True ($doctor -match 'filesystem_sandbox=' -and $doctor -match 'network_sandbox=') 'Doctor output must still record the requested sandbox policy fields.'
+Assert-True ($doctor -match 'Get-Command codex\.cmd' -and $doctor -match "Kind = 'cmd-shim'") 'Doctor must prefer the npm cmd shim over the known-unsafe PowerShell shim.'
+Assert-True ($doctor -match "Kind = 'powershell-shim-fallback'") 'Doctor may retain the PowerShell shim only as a fallback.'
+Assert-True (($doctor -split 'codex\.cmd')[0] -notmatch "\`$extension -eq '\.ps1'") 'Doctor must probe the cmd shim before any PowerShell shim branch.'
 Assert-True ($doctor -match 'model_inference_used=false') 'N2 doctor must explicitly remain zero-inference.'
 Assert-True ($doctor -match 'credential_value_logged=False') 'N2 doctor must make the no-secret-output contract explicit.'
 
@@ -88,6 +97,33 @@ Assert-True ($repoRead -match 'stdout\.Contains\(\$key\)' -and $repoRead -match 
 Assert-True ($repoRead -notmatch 'Write-Output[^\r\n]*(\$stdout\b|\$stderr\b|\$key\b)') 'N3 must not print raw process streams or credential values.'
 Assert-True ($repoRead -notmatch 'nvapi-[A-Za-z0-9_-]{12,}') 'N3 must not contain a NVIDIA credential literal.'
 Assert-True ($repoRead -match 'credential_value_logged=False') 'N3 must make the no-secret-output contract explicit.'
+
+# A custom NIM model is never in Codex's model catalog, so the fallback-metadata
+# notice arrives on every turn as an error-typed stream entry. Both live probes
+# must separate that notice from a real turn failure, and neither may swallow an
+# unrecognized stream error.
+foreach ($pair in @(
+    @{ Name = 'N2b smoke'; Text = $smoke },
+    @{ Name = 'N3 repo-read'; Text = $repoRead }
+)) {
+    $name = $pair.Name
+    $text = $pair.Text
+    Assert-True ($text -match 'Get-StreamErrorMessages') "$name must collect stream errors before classifying the turn."
+    Assert-True ($text -notmatch "\`$_\.type -eq 'turn\.failed' -or \`$_\.type -eq 'error'") "$name must not treat every error-typed stream entry as a turn failure."
+    Assert-True ($text -match "benignStreamErrorPattern = '\(\?i\)model metadata for \.\+ not found'") "$name must recognize only the known fallback-metadata notice as benign."
+    Assert-True ($text.Contains('$retryStreamErrorPattern = ''(?i)^\s*reconnecting\b''')) "$name must recognize a recoverable provider reconnect notice."
+    Assert-True ($text -match '\$fatalStreamErrors\.Count -gt 0') "$name must still fail the turn on an unrecognized stream error."
+    Assert-True ($text -match 'provider_retry_notice_count=' -and $text -match 'provider_model_not_found_seen=') "$name output must expose the provider retry rate and the 404 model-not-found signal."
+    Assert-True ($text -match 'provider_retry_summary=\$providerRetrySummary') "$name must report retry notices through the sanitizer."
+    Assert-True (@([regex]::Matches($text, 'Write-Output[^\r\n]*\$providerRetryNotices(?!\.Count)')).Count -eq 0) "$name must not print raw retry-notice text."
+    Assert-True ($text -match "\`$eventType -like 'item\.\*'" -and $text -match "\`$eventType -eq 'error'") "$name must inspect both the top-level and item-shaped error entries."
+    Assert-True ($text -match '\$seenItemIds') "$name must de-duplicate one error item reported on both item.started and item.completed."
+    Assert-True ($text -match 'model_metadata_fallback_seen=' -and $text -match 'fatal_stream_error_count=') "$name output must expose the benign/fatal stream-error split."
+    Assert-True ($text -match '\$fatalStreamErrorSummary = Get-SafeStderrSummary -CapturedStderr \(\$fatalStreamErrors -join') "$name must report unrecognized stream errors through the sanitizer."
+    # Printing the count is safe; interpolating the collected text is not.
+    Assert-True (@([regex]::Matches($text, 'Write-Output[^\r\n]*\$fatalStreamErrors(?!\.Count)')).Count -eq 0) "$name must not print raw stream-error text."
+    Assert-True (@([regex]::Matches($text, 'Write-Output[^\r\n]*\$streamErrorMessages(?!\.Count)')).Count -eq 0) "$name must not print raw stream-error messages."
+}
 
 Write-Output 'PASS Codex NIM N2/N3 harness assets'
 exit 0

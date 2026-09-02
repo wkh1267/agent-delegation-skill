@@ -142,6 +142,35 @@ function Get-WorkingTreeState {
     return ($lines -join "`n")
 }
 
+# Codex reports non-fatal startup notices on the same JSONL stream as real
+# failures, either as a top-level `error` event or as an error-typed item. A
+# single notice can appear on both item.started and item.completed, so items are
+# de-duplicated by id before classification.
+function Get-StreamErrorMessages {
+    param([object[]]$Events)
+
+    $messages = @()
+    $seenItemIds = @{}
+    foreach ($event in $Events) {
+        $eventType = [string]$event.type
+        if ($eventType -eq 'error') {
+            $text = [string]$event.message
+            if ([string]::IsNullOrWhiteSpace($text)) { $text = [string]$event.error }
+            $messages += $text
+            continue
+        }
+        if ($eventType -like 'item.*' -and $null -ne $event.item -and [string]$event.item.type -eq 'error') {
+            $itemId = [string]$event.item.id
+            if (-not [string]::IsNullOrWhiteSpace($itemId)) {
+                if ($seenItemIds.ContainsKey($itemId)) { continue }
+                $seenItemIds[$itemId] = $true
+            }
+            $messages += [string]$event.item.message
+        }
+    }
+    return @($messages)
+}
+
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     if ($env:LOCALAPPDATA) { $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'agent-delegation-skills\codex-nim' }
     else { $RuntimeRoot = Join-Path ([IO.Path]::GetTempPath()) 'agent-delegation-skills\codex-nim' }
@@ -243,7 +272,29 @@ foreach ($line in $lines) {
 $threadEvents = @($events | Where-Object { $_.type -eq 'thread.started' })
 $threadIdPresent = $threadEvents.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$threadEvents[0].thread_id)
 $turnCompleted = @($events | Where-Object { $_.type -eq 'turn.completed' }).Count -gt 0
-$turnFailed = @($events | Where-Object { $_.type -eq 'turn.failed' -or $_.type -eq 'error' }).Count -gt 0
+
+# A custom NIM model is absent from Codex's model catalog, so every Worker turn
+# opens with a fallback-metadata notice delivered as an error-typed entry. It is
+# informational and the turn still runs to completion, so treating any
+# error-typed entry as a turn failure makes this gate impossible to pass. Only
+# unrecognized error text is fatal, and its sanitized text is always reported.
+#
+# Codex also emits a `Reconnecting... n/m` notice for each recoverable provider
+# stream fault. The hosted NIM endpoint intermittently answers a valid model id
+# with 404 Model not found or drops the response stream, and Codex retries. The
+# turn outcome is decided by turn.completed plus the exact-answer check, so a
+# retry that ultimately succeeded must not fail the gate — otherwise this gate
+# goes flaky on provider weather. Retries are counted and summarized instead,
+# because their rate is the reliability signal the runtime bake-off needs.
+$benignStreamErrorPattern = '(?i)model metadata for .+ not found'
+$retryStreamErrorPattern = '(?i)^\s*reconnecting\b'
+$streamErrorMessages = @(Get-StreamErrorMessages -Events $events)
+$modelMetadataFallbackSeen = @($streamErrorMessages | Where-Object { $_ -match $benignStreamErrorPattern }).Count -gt 0
+$unexpectedStreamErrors = @($streamErrorMessages | Where-Object { $_ -notmatch $benignStreamErrorPattern })
+$providerRetryNotices = @($unexpectedStreamErrors | Where-Object { $_ -match $retryStreamErrorPattern })
+$providerModelNotFoundSeen = @($providerRetryNotices | Where-Object { $_ -match '(?i)\bmodel not found\b' }).Count -gt 0
+$fatalStreamErrors = @($unexpectedStreamErrors | Where-Object { $_ -notmatch $retryStreamErrorPattern })
+$turnFailed = (@($events | Where-Object { $_.type -eq 'turn.failed' }).Count -gt 0) -or ($fatalStreamErrors.Count -gt 0)
 $completedCommands = @($events | Where-Object { $_.type -eq 'item.completed' -and $_.item.type -eq 'command_execution' })
 $toolUsePresent = $completedCommands.Count -gt 0
 $readmeCommands = @($completedCommands | Where-Object { ([string]$_.item.command) -match '(?i)README\.md' })
@@ -263,6 +314,8 @@ $credentialLeakDetected = $false
 if (-not [string]::IsNullOrEmpty($key)) { $credentialLeakDetected = $stdout.Contains($key) -or $stderr.Contains($key) }
 $failureClass = Get-SafeFailureClass -CapturedStderr $stderr -ProcessExitCode $exitCode
 $stderrSummary = Get-SafeStderrSummary -CapturedStderr $stderr -Credential $key
+$fatalStreamErrorSummary = Get-SafeStderrSummary -CapturedStderr ($fatalStreamErrors -join ' | ') -Credential $key
+$providerRetrySummary = Get-SafeStderrSummary -CapturedStderr ($providerRetryNotices -join ' | ') -Credential $key
 $stderrPresent = -not [string]::IsNullOrWhiteSpace($stderr)
 $eventTypes = @($events | ForEach-Object { [string]$_.type } | Select-Object -Unique)
 $eventTypesText = if ($eventTypes.Count -eq 0) { 'none' } else { $eventTypes -join ',' }
@@ -314,6 +367,13 @@ Write-Output "event_types=$eventTypesText"
 Write-Output "thread_id_present=$([bool]$threadIdPresent)"
 Write-Output "turn_completed=$([bool]$turnCompleted)"
 Write-Output "turn_failed=$([bool]$turnFailed)"
+Write-Output "stream_error_count=$($streamErrorMessages.Count)"
+Write-Output "model_metadata_fallback_seen=$([bool]$modelMetadataFallbackSeen)"
+Write-Output "provider_retry_notice_count=$($providerRetryNotices.Count)"
+Write-Output "provider_model_not_found_seen=$([bool]$providerModelNotFoundSeen)"
+Write-Output "provider_retry_summary=$providerRetrySummary"
+Write-Output "fatal_stream_error_count=$($fatalStreamErrors.Count)"
+Write-Output "fatal_stream_error_summary=$fatalStreamErrorSummary"
 Write-Output "command_execution_count=$($completedCommands.Count)"
 Write-Output "tool_use_present=$([bool]$toolUsePresent)"
 Write-Output "readme_tool_command_present=$([bool]$readmeToolCommandPresent)"

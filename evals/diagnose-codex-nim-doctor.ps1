@@ -42,20 +42,25 @@ function Get-CodexLaunchSpec {
         }
     }
 
+    # `Get-Command codex` resolves codex.ps1 ahead of codex.cmd on this PATH, and
+    # the npm PowerShell shim is the known-unsafe launcher for this runtime. Probe
+    # the cmd shim explicitly so every Codex/NIM probe shares one launcher order.
+    $cmdShim = Get-Command codex.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmdShim) {
+        $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+        return [pscustomobject]@{
+            VersionCommand = $cmdShim.Source
+            FileName = $comspec
+            ArgumentsPrefix = ('/d /s /c ""' + $cmdShim.Source + '" ')
+            ArgumentsSuffix = '"'
+            Kind = 'cmd-shim'
+        }
+    }
+
     $command = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $command) { return $null }
 
     $extension = [IO.Path]::GetExtension([string]$command.Source).ToLowerInvariant()
-    if ($extension -eq '.ps1') {
-        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
-        return [pscustomobject]@{
-            VersionCommand = $command.Source
-            FileName = $powershell.Source
-            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
-            ArgumentsSuffix = ''
-            Kind = 'powershell-shim'
-        }
-    }
     if ($extension -eq '.cmd' -or $extension -eq '.bat') {
         $comspec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
         return [pscustomobject]@{
@@ -64,6 +69,16 @@ function Get-CodexLaunchSpec {
             ArgumentsPrefix = ('/d /s /c ""' + $command.Source + '" ')
             ArgumentsSuffix = '"'
             Kind = 'cmd-shim'
+        }
+    }
+    if ($extension -eq '.ps1') {
+        $powershell = Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        return [pscustomobject]@{
+            VersionCommand = $command.Source
+            FileName = $powershell.Source
+            ArgumentsPrefix = ('-NoProfile -ExecutionPolicy Bypass -File "' + $command.Source + '" ')
+            ArgumentsSuffix = ''
+            Kind = 'powershell-shim-fallback'
         }
     }
 
@@ -111,23 +126,19 @@ function Get-DetailValue {
     return $null
 }
 
-function Get-DetailLineValue {
-    param(
-        [object]$Check,
-        [string[]]$Names
-    )
+# `codex doctor` prints the concrete Windows backend name only while it is off
+# ("disabled"); once a real backend is active the name comes back as the literal
+# string "<redacted>" in both the JSON and human reports on 0.151.0. So the
+# backend can only be gated negatively, and the raw value is never a secret.
+function Get-SandboxBackendClass {
+    param([string]$Backend)
 
-    if ($null -eq $Check -or $null -eq $Check.details) { return $null }
-    foreach ($detail in @($Check.details)) {
-        $text = [string]$detail
-        foreach ($name in $Names) {
-            $prefix = $name + ':'
-            if ($text.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-                return $text.Substring($prefix.Length).Trim()
-            }
-        }
-    }
-    return $null
+    if ([string]::IsNullOrWhiteSpace($Backend)) { return 'missing' }
+    $value = $Backend.Trim()
+    if ($value -match '^(?i:disabled|none|off)$') { return 'disabled' }
+    if ($value -ceq '<redacted>') { return 'enabled-redacted' }
+    if ($value -match '^(?i:RestrictedToken|Elevated)$') { return "enabled-$value" }
+    return 'unrecognized'
 }
 
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
@@ -236,9 +247,12 @@ $sandboxCheck = Get-DoctorCheck -Report $report -Id 'sandbox.helpers'
 $activeModel = Get-DetailValue -Check $configCheck -Names @('model')
 $activeProvider = Get-DetailValue -Check $configCheck -Names @('model provider', 'model_provider')
 $providerEnv = Get-DetailValue -Check $authCheck -Names @('provider auth env var', 'provider_auth_env_var')
-$sandboxBackend = Get-DetailLineValue -Check $sandboxCheck -Names @('sandbox backend')
-$approvalPolicy = Get-DetailLineValue -Check $sandboxCheck -Names @('approval policy')
-$filesystemSandbox = Get-DetailLineValue -Check $sandboxCheck -Names @('filesystem sandbox')
+# `checks.<id>.details` is a JSON object, so every detail is read by name.
+$sandboxBackend = Get-DetailValue -Check $sandboxCheck -Names @('sandbox backend', 'sandbox_backend')
+$approvalPolicy = Get-DetailValue -Check $sandboxCheck -Names @('approval policy', 'approval_policy')
+$filesystemSandbox = Get-DetailValue -Check $sandboxCheck -Names @('filesystem sandbox', 'filesystem_sandbox')
+$networkSandbox = Get-DetailValue -Check $sandboxCheck -Names @('network sandbox', 'network_sandbox')
+$sandboxBackendClass = Get-SandboxBackendClass -Backend $sandboxBackend
 
 $configStatus = if ($null -eq $configCheck) { 'missing' } else { [string]$configCheck.status }
 $authStatus = if ($null -eq $authCheck) { 'missing' } else { [string]$authCheck.status }
@@ -253,7 +267,11 @@ $expectedModel = 'nvidia/nemotron-3-super-120b-a12b'
 $configLoaded = $configStatus -match '^(?i:ok)$'
 $providerSelected = $activeProvider -ceq 'nim'
 $modelSelected = $activeModel -ceq $expectedModel
-$windowsSandboxEnabled = $sandboxBackend -match '^(?i:RestrictedToken|Elevated)$'
+# Gate the backend negatively: "disabled" is the exact state that made
+# non-interactive exec-policy reject benign commands, and it is the one state
+# doctor still reports verbatim. `filesystem sandbox`/`network sandbox` report
+# the requested policy in both arms, so neither discriminates the backend.
+$windowsSandboxEnabled = $sandboxBackendClass -like 'enabled*'
 $doctorSucceeded = (-not $timedOut -and $doctorExitCode -eq 0 -and $decodeOk)
 $overallPass = (
     $doctorSucceeded -and
@@ -286,10 +304,11 @@ Write-Output "auth_status=$authStatus"
 Write-Output "provider_env_present=$([bool]$providerEnvPresent)"
 Write-Output "reachability_status=$reachabilityStatus"
 Write-Output "sandbox_status=$sandboxStatus"
-Write-Output "sandbox_backend=$(if ([string]::IsNullOrWhiteSpace($sandboxBackend)) { 'missing' } else { $sandboxBackend })"
+Write-Output "sandbox_backend_class=$sandboxBackendClass"
 Write-Output "windows_sandbox_enabled=$([bool]$windowsSandboxEnabled)"
 Write-Output "approval_policy=$(if ([string]::IsNullOrWhiteSpace($approvalPolicy)) { 'missing' } else { $approvalPolicy })"
 Write-Output "filesystem_sandbox=$(if ([string]::IsNullOrWhiteSpace($filesystemSandbox)) { 'missing' } else { $filesystemSandbox })"
+Write-Output "network_sandbox=$(if ([string]::IsNullOrWhiteSpace($networkSandbox)) { 'missing' } else { $networkSandbox })"
 Write-Output "stderr_present=$([bool](-not [string]::IsNullOrWhiteSpace($doctorStderr)))"
 Write-Output "credential_leak_detected=$([bool]$credentialLeakDetected)"
 Write-Output "overall=$(if ($overallPass) { 'PASS' } else { 'FAIL' })"

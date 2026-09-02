@@ -140,6 +140,55 @@ Use a Delegent-controlled or temporary `CODEX_HOME` for the NIM Worker profile/c
 
 No credential values may appear in tracked config, JSONL logs, handoffs, diagnostics, or CI output.
 
+### 7. Pin the Windows sandbox backend explicitly
+
+The isolated Worker config must declare:
+
+```toml
+[windows]
+sandbox = "unelevated"
+```
+
+On Codex 0.151.0 for Windows an unspecified backend resolves to `disabled`. A
+restricted permission profile with no enforceable sandbox makes non-interactive
+`codex exec` exec-policy reject otherwise-benign unmatched commands, because
+there is no approval prompt available to fall back on. That is what blocked N3b.
+`unelevated` selects the RestrictedToken backend, and the zero-inference doctor
+differential is unambiguous:
+
+```text
+no [windows] sandbox key   -> sandbox backend = disabled
+sandbox = "unelevated"     -> sandbox backend = <redacted>  (i.e. enabled)
+```
+
+Do not treat `--sandbox danger-full-access` as the remedy. It is a diagnostic
+control only; the Worker must stay inside Codex's managed sandbox.
+
+Consequence for diagnostics: Codex redacts an *enabled* backend's name in both
+the `--json` and human doctor reports (`--json` is documented as "Emit a
+redacted machine-readable report"), while printing `disabled` verbatim. The
+backend can therefore only be gated **negatively**, against `disabled`. Also,
+`filesystem sandbox`/`network sandbox` report the requested policy and read
+`restricted` whether or not a backend is active, so neither may be used to infer
+that the sandbox is enforced.
+
+### 8. Classify error-typed stream entries; never gate on their presence
+
+Codex delivers non-fatal notices on the same JSONL stream as real failures, both
+as top-level `error` events and as error-typed items. Two are expected on this
+runtime and must be reported rather than treated as turn failures:
+
+- the fallback-metadata notice, which appears on **every** turn because a custom
+  NIM model is never in Codex's model catalog;
+- `Reconnecting... n/5` notices, when the hosted NIM endpoint answers a valid
+  model id with `404 Model not found` or drops the response stream.
+
+A turn's outcome is decided by `turn.completed`/`turn.failed` plus exact output
+validation, never by the mere presence of an error-typed entry — otherwise the
+gates go flaky on provider weather. Any *unrecognized* stream error still fails.
+Retry counts and the 404 signal are recorded because their rate is a reliability
+input for the runtime bake-off.
+
 ## Consequences
 
 ### Positive
@@ -158,6 +207,8 @@ No credential values may appear in tracked config, JSONL logs, handoffs, diagnos
 - Third-party Responses compatibility may differ from OpenAI's implementation for built-in/custom tools or structured output.
 - `codex exec --json` is useful for lifecycle telemetry, but the Context Firewall must not depend on reconstructing every internal tool call from JSONL.
 - Persistent Worker reuse through `codex exec resume` needs explicit validation with a custom NIM provider.
+- Codex has no catalog metadata for a custom NIM model, so it applies fallback metadata (observed context window `258400`) and warns that this can degrade behavior. `model_context_window` is a real config key, but the hosted NIM `/v1/models` response exposes only `id`/`object`/`created`/`owned_by`, so no authoritative Nemotron context length is available to pin. Guessing a value is worse than the documented fallback; revisit before N5/N6 grow long Worker threads.
+- The hosted NIM endpoint is intermittently unreliable for a valid model id: one observed N2b turn needed four Codex retries (twice `404 Model not found`, twice a dropped response stream) before completing correctly, while adjacent runs needed none. Worker-facing timeouts and retry budgets must assume this.
 
 ## Runtime selection gate
 
@@ -165,10 +216,10 @@ Do not formally replace OpenCode merely because the Codex path can answer a prom
 
 Codex+NIM becomes the V0.1 preferred Worker runtime only after it passes all of:
 
-1. hosted NIM Responses compatibility;
-2. Codex custom-provider execution;
-3. real repository read/tool use;
-4. deterministic terminal handoff;
+1. hosted NIM Responses compatibility; **PASS (N1)**
+2. Codex custom-provider execution; **PASS (N2a/N2b)**
+3. real repository read/tool use; **PASS (N3, 2026-09-03)**
+4. deterministic terminal handoff; **next (N4)**
 5. session resume/continuity;
 6. controlled repository mutation + verifier;
 7. credential/trajectory isolation;
