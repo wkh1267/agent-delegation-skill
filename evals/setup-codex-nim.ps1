@@ -2,7 +2,13 @@
 param(
     [string]$RuntimeRoot,
     [string]$BaseUrl = 'https://integrate.api.nvidia.com/v1',
-    [string]$Model = 'nvidia/nemotron-3-super-120b-a12b'
+    [string]$Model = 'nvidia/nemotron-3-super-120b-a12b',
+    # Optional Delegent handoff boundary. All three must be supplied together,
+    # and only the N4 gate supplies them, so every earlier gate keeps inspecting
+    # the same minimal config it was validated against.
+    [string]$HandoffToolPath,
+    [string]$HandoffSchemaPath,
+    [string]$HandoffOutPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +16,13 @@ $ErrorActionPreference = 'Stop'
 function ConvertTo-TomlBasicString {
     param([string]$Value)
     if ($null -eq $Value) { return '' }
-    ($Value -replace '\\', '\\\\') -replace '"', '\"'
+    # String .Replace, not -replace: in a regex replacement '\\\\' is four
+    # literal backslashes, so the regex form turned one backslash into four and
+    # TOML then parsed it back to two. That stayed invisible while this only
+    # escaped values without backslashes, and produced broken Windows paths as
+    # soon as one was escaped. Backslashes first, then quotes, so the backslash
+    # introduced by \" is not doubled.
+    $Value.Replace('\', '\\').Replace('"', '\"')
 }
 
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
@@ -74,6 +86,45 @@ env_key = "NIM_API_KEY"
 wire_api = "responses"
 "@
 
+$handoffRequested = -not (
+    [string]::IsNullOrWhiteSpace($HandoffToolPath) -and
+    [string]::IsNullOrWhiteSpace($HandoffSchemaPath) -and
+    [string]::IsNullOrWhiteSpace($HandoffOutPath)
+)
+$handoffToolRegistered = $false
+if ($handoffRequested) {
+    if ([string]::IsNullOrWhiteSpace($HandoffToolPath) -or
+        [string]::IsNullOrWhiteSpace($HandoffSchemaPath) -or
+        [string]::IsNullOrWhiteSpace($HandoffOutPath)) {
+        throw 'HandoffToolPath, HandoffSchemaPath and HandoffOutPath must be supplied together.'
+    }
+    if (-not (Test-Path -LiteralPath $HandoffToolPath -PathType Leaf)) { throw 'Handoff MCP server was not found.' }
+    if (-not (Test-Path -LiteralPath $HandoffSchemaPath -PathType Leaf)) { throw 'Handoff schema was not found.' }
+
+    # Resolve node rather than relying on the child process inheriting a PATH
+    # that happens to contain it.
+    $nodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nodeCommand) { throw 'node is required to host the Delegent handoff MCP boundary.' }
+
+    # The hosted NIM endpoint does not enforce Responses-native structured
+    # output, so the terminal handoff travels as tool-call arguments instead.
+    # See docs/decisions/0001-codex-nim-worker-runtime.md.
+    $configText += @"
+
+
+[mcp_servers.delegent]
+command = "$(ConvertTo-TomlBasicString $nodeCommand.Source)"
+args = ["$(ConvertTo-TomlBasicString $HandoffToolPath)", "$(ConvertTo-TomlBasicString $HandoffSchemaPath)", "$(ConvertTo-TomlBasicString $HandoffOutPath)"]
+enabled = true
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+default_tools_approval_mode = "auto"
+enabled_tools = ["delegent_handoff"]
+"@
+    $handoffToolRegistered = $true
+}
+
 [IO.File]::WriteAllText($configPath, $configText, (New-Object Text.UTF8Encoding($false)))
 $staleProfileRemoved = $false
 if (Test-Path -LiteralPath $staleProfilePath -PathType Leaf) {
@@ -90,6 +141,7 @@ Write-Output "base_url=$normalizedBaseUrl"
 Write-Output "model=$Model"
 Write-Output 'model_provider=nim'
 Write-Output 'windows_sandbox=unelevated'
+Write-Output "handoff_tool_registered=$([bool]$handoffToolRegistered)"
 Write-Output 'config_mode=isolated-default'
 Write-Output 'profile_required=False'
 Write-Output "stale_profile_removed=$([bool]$staleProfileRemoved)"

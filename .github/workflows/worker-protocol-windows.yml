@@ -29,6 +29,7 @@ jobs:
           Invoke-TestScript .\evals\test-codex-nim-bootstrap.ps1
           Invoke-TestScript .\evals\test-codex-nim-smoke-assets.ps1
           Invoke-TestScript .\evals\test-codex-nim-stream-error-classifier.ps1
+          Invoke-TestScript .\evals\test-delegent-handoff-mcp.ps1
           Invoke-TestScript .\evals\test-codex-windows-sandbox-diagnostic-assets.ps1
           Invoke-TestScript .\evals\test-codex-powershell-profile-gap-assets.ps1
 
