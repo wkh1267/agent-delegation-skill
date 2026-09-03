@@ -70,8 +70,8 @@ D2  Worker continuity / session reuse                   PASS 3/3
 D2b Injectable transport so provider retry is testable
 D3  Mutation boundary decision (ADR-0003)               DECIDED
 D4a Scope matching + write tool + verifier (no model)   PASS 88 assertions
-D4b Staging tree lifecycle (no model)                   NEXT
-D4c Live controlled mutation gate
+D4b Staging tree lifecycle (no model)                   PASS 53 assertions
+D4c Live controlled mutation gate                       NEXT
 D4d codex sandbox wrapper
 D5  Production-candidate Delegent Worker adapter
 D6  Shell tool + real isolation                         SEPARATE GATE
