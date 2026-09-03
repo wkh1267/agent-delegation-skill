@@ -69,7 +69,10 @@ D1b Read-only tool surface: list + search               PASS 5/5
 D2  Worker continuity / session reuse                   PASS 3/3
 D2b Injectable transport so provider retry is testable
 D3  Mutation boundary decision (ADR-0003)               DECIDED
-D4  Controlled mutation + verifier                      NEXT
+D4a Scope matching + write tool + verifier (no model)   PASS 88 assertions
+D4b Staging tree lifecycle (no model)                   NEXT
+D4c Live controlled mutation gate
+D4d codex sandbox wrapper
 D5  Production-candidate Delegent Worker adapter
 D6  Shell tool + real isolation                         SEPARATE GATE
 
@@ -908,9 +911,40 @@ D1 (10/10), D1b (5/5) and D2 (3/3) all pass, so the Worker now does read-only
 exploration end to end, reports through the validated boundary, and carries
 context across turns under a Lead-chosen affinity.
 
-**Start D4 — controlled mutation.** D3 is settled by
+**Start D4a.** D3 is settled by
 [ADR-0003](../docs/decisions/0003-mutation-boundary.md), so D4 implements it
-rather than re-deciding it. What D4 has to build:
+rather than re-deciding it — but as four gates, not one, because it carries four
+different kinds of risk and this repo's gate granularity is one claim per gate.
+Ordered by verifiability, not by size:
+
+```text
+D4a  scope matching, write tool, verifier   no model, no network, all in CI
+D4b  staging tree lifecycle                 needs only git, still no model
+D4c  live controlled mutation               the Worker actually changes a file
+D4d  codex sandbox wrapper                  highest integration risk, so last
+```
+
+D4a first because the security-critical logic lives there — scope matching,
+containment, and the split between the two failure modes — and none of it needs
+a single live turn to prove. Pin it in CI, and when a later gate misbehaves you
+already know it is not that.
+
+**D4d is separate for a concrete reason, not out of caution.** Today the Worker
+writes its handoff and its session transcript here:
+
+```text
+<LOCALAPPDATA>\agent-delegation-skills\nim-worker\delegent-handoff.json
+<LOCALAPPDATA>\agent-delegation-skills\nim-worker\sessions\
+```
+
+Under `:workspace` only the cwd and `%LOCALAPPDATA%\Temp` are writable, and
+extra writable roots cannot be added unelevated. `agent-delegation-skills\` is
+not `Temp`, so wrapping the Worker in the sandbox will deny both writes — which
+would break the continuity D2 just proved. The fix is small (move both under
+TEMP or inside the staging tree), but bundled into a bigger gate it surfaces as
+"mutation failed" and costs an hour to trace.
+
+What D4 has to build in total:
 
 ```text
 staging tree   git worktree per delegation, outside the user's tree, lifetime

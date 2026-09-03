@@ -12,10 +12,13 @@
 // handoff on that path.
 //
 // What is deliberately given up, and must not be quietly assumed back: Codex
-// supplied the sandbox, the shell tool and session persistence. This runtime has
-// none of them, so its tool surface is read-only by construction: list, search
-// and read, every one of them path-contained, with no shell and no writes.
-// Mutation work needs a real sandbox story before it can live here.
+// supplied the sandbox and the shell tool. There is still **no shell here**, and
+// adding one is gated on its own decision. Every tool is path-contained.
+//
+// Writing is opt-in and scope-gated per ADR-0003: with no declared mutation
+// scope the write tool is not even advertised, so the surface is list, search
+// and read. With a scope, `write_file` can create and overwrite inside it and
+// nothing else — no delete, no rename, both of which escalate instead.
 //
 // Emits newline-delimited JSON lifecycle events on stdout so a probe can
 // validate a run the same way it validates a Codex run. The credential is never
@@ -28,6 +31,12 @@
 const fs = require('fs');
 const path = require('path');
 const { validate, filterHandoff } = require('./delegent-schema');
+const {
+  MAX_WRITE_BYTES,
+  parseScope,
+  describeScope,
+  resolveWriteTarget
+} = require('./delegent-scope');
 
 function parseArgs(argv) {
   const options = {
@@ -49,6 +58,8 @@ function parseArgs(argv) {
     else if (key === '--max-handoff-attempts') options.maxHandoffAttempts = parseInt(value, 10);
     else if (key === '--session') options.session = value;
     else if (key === '--session-dir') options.sessionDir = value;
+    else if (key === '--scope-prefix') (options.scopePrefixes = options.scopePrefixes || []).push(value);
+    else if (key === '--scope-path') (options.scopePaths = options.scopePaths || []).push(value);
     else options.unknown = key;
   }
   return options;
@@ -58,6 +69,7 @@ const options = parseArgs(process.argv);
 const credential = process.env.NIM_API_KEY || '';
 let schema = null;
 let repoRoot = null;
+let mutationScope = null;
 
 function emit(event) {
   process.stdout.write(JSON.stringify(event) + '\n');
@@ -95,6 +107,12 @@ function init() {
   if (options.session && !options.sessionDir) fail('--session requires --session-dir');
   schema = JSON.parse(fs.readFileSync(options.schemaPath, 'utf8'));
   repoRoot = fs.realpathSync(options.repoRoot);
+
+  if (options.scopePrefixes || options.scopePaths) {
+    const parsed = parseScope({ prefixes: options.scopePrefixes, paths: options.scopePaths });
+    if (!parsed.ok) fail('invalid mutation scope: ' + parsed.reason);
+    mutationScope = parsed.scope;
+  }
 }
 
 // ---- Worker continuity ----
@@ -338,6 +356,43 @@ function searchTool(args, root) {
   return { ok: true, output: header + results.join('\n') };
 }
 
+// Mutation is opt-in and scope-gated. With no declared scope there is no write
+// tool at all, which is why the read-only gates are unaffected by its existence.
+const writeState = { writes: [], outOfScopeAttempts: 0 };
+
+// The event sink is injectable so a test can exercise the tool without its
+// JSONL landing in the test's own stdout. Defaults to the runtime's stream.
+function writeFileTool(args, context) {
+  const root = (context && context.root) || repoRoot;
+  const scope = (context && context.scope) || mutationScope;
+  const report = (context && context.emit) || emit;
+  if (!scope) return { ok: false, output: 'no mutation scope was declared for this task' };
+
+  const content = args && args.content;
+  if (typeof content !== 'string') return { ok: false, output: 'content must be a string' };
+  if (Buffer.byteLength(content, 'utf8') > MAX_WRITE_BYTES) {
+    return { ok: false, output: 'content exceeds the ' + MAX_WRITE_BYTES + ' byte write limit' };
+  }
+
+  const target = resolveWriteTarget(root, scope, args && args.path);
+  if (!target.ok) {
+    // An out-of-scope attempt is recorded, not just refused. If our containment
+    // is ever defective, the count is the evidence that it was exercised.
+    if (target.outOfScope) writeState.outOfScopeAttempts++;
+    return { ok: false, output: 'WRITE_REFUSED: ' + target.reason };
+  }
+
+  if (target.parentToCreate) fs.mkdirSync(path.dirname(target.absolute), { recursive: true });
+  fs.writeFileSync(target.absolute, content, 'utf8');
+
+  if (writeState.writes.indexOf(target.relative) === -1) writeState.writes.push(target.relative);
+  report({
+    type: 'item.completed',
+    item: { type: 'write', path: target.relative, created: !target.existed, bytes: Buffer.byteLength(content, 'utf8') }
+  });
+  return { ok: true, output: (target.existed ? 'OVERWROTE ' : 'CREATED ') + target.relative };
+}
+
 const handoffState = { attempts: 0, accepted: false, violations: [] };
 
 // The machine boundary. Validates against the shipped schema, and a rejected
@@ -381,7 +436,7 @@ function handoffTool(args) {
 // Built after init, because the handoff tool's parameters are the shipped
 // schema and it is not loaded until then.
 function buildTools() {
-  return [
+  const tools = [
   {
     type: 'function',
     name: 'list_files',
@@ -437,10 +492,36 @@ function buildTools() {
     parameters: schema
   }
   ];
+
+  // No declared scope, no write tool. The Worker cannot reach for a capability
+  // the Lead did not grant, so the read-only gates see exactly the surface they
+  // were validated against.
+  if (mutationScope) {
+    tools.splice(tools.length - 1, 0, {
+      type: 'function',
+      name: 'write_file',
+      description:
+        'Create or overwrite a file, within the declared mutation scope (' + describeScope(mutationScope) + '). ' +
+        'Writes the whole file, so include the complete intended contents. Cannot delete or rename; ' +
+        'if the task needs either, report it in decisions_needed instead.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'content'],
+        properties: {
+          path: { type: 'string', description: 'Repository-relative path, inside the declared scope.' },
+          content: { type: 'string', description: 'The complete new contents of the file.' }
+        }
+      }
+    });
+  }
+
+  return tools;
 }
 
 let tools = null;
 const dispatch = {
+  write_file: writeFileTool,
   list_files: listFilesTool,
   search: searchTool,
   read_file: readFileTool,
@@ -635,6 +716,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  writeFileTool,
   resolveContainedEntry,
   resolveContainedPath,
   readFileTool,
