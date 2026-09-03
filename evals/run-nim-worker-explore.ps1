@@ -11,10 +11,10 @@ param(
 # list a directory, locate text by search, and read what it found -- then report
 # through the same validated boundary.
 #
-# Every assertion below is grounded in a checked repository fact rather than a
-# guess: `docs/decisions` holds exactly two records, and within that directory
-# the string `unelevated` occurs in 0001 only. Scoping the search that way keeps
-# the expectation stable as the rest of the repository grows.
+# Every assertion is derived from the repository at preflight, so the gate tracks
+# the repository instead of going stale with it. The search arm asserts a file
+# that contains the term but lives *outside* docs/decisions: listing that
+# directory cannot reveal it, so only a real search can put it in the handoff.
 #
 # The task prompt never names the handoff fields, so schema conformance cannot
 # be explained by prompt-following.
@@ -30,8 +30,13 @@ $credentialSource = 'none'
 $schemaPath = Join-Path $repoRoot 'skills\delegating-work\schemas\delegent-handoff.schema.json'
 $workerPath = Join-Path $repoRoot 'skills\delegating-work\tools\delegent-nim-worker.js'
 
-$expectedAdrs = @('0001-codex-nim-worker-runtime.md', '0002-direct-nim-worker-runtime.md')
-$expectedTitleFragment = 'ADR-0001'
+# Every expectation is derived from the repository at preflight, never hardcoded.
+# The first version of this gate hardcoded "exactly two decision records" and
+# "only 0001 mentions the search term"; adding ADR-0003 falsified both. The gate
+# is still the oracle -- it derives the answers with PowerShell while the Worker
+# finds them with node, so agreement still means the Worker actually looked.
+$searchTerm = 'unelevated'
+$titleAdr = '0001-codex-nim-worker-runtime.md'
 
 function Get-NimCredential {
     if (-not [string]::IsNullOrWhiteSpace($env:NIM_API_KEY)) {
@@ -158,15 +163,31 @@ if (-not $node) {
 if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) { throw 'Delegent handoff schema is missing.' }
 if (-not (Test-Path -LiteralPath $workerPath -PathType Leaf)) { throw 'Delegent NIM Worker runtime is missing.' }
 
-# The gate's expectations are only meaningful if the repository still looks the
-# way they assume, so verify that up front instead of failing mysteriously.
 $decisionsDir = Join-Path $repoRoot 'docs\decisions'
-$actualAdrs = @(Get-ChildItem -LiteralPath $decisionsDir -File -Filter '*.md' | ForEach-Object { $_.Name })
-if ($actualAdrs.Count -ne $expectedAdrs.Count) {
-    throw "This gate assumes $($expectedAdrs.Count) decision records but found $($actualAdrs.Count). Update the expectations."
-}
-foreach ($name in $expectedAdrs) {
-    if ($actualAdrs -notcontains $name) { throw "Expected decision record $name is missing. Update the expectations." }
+$expectedAdrs = @(Get-ChildItem -LiteralPath $decisionsDir -File -Filter '*.md' | ForEach-Object { $_.Name } | Sort-Object)
+if ($expectedAdrs.Count -lt 2) { throw 'This gate needs at least two decision records to be a meaningful listing task.' }
+
+$expectedTitle = (Get-Content -LiteralPath (Join-Path $decisionsDir $titleAdr) -TotalCount 1)
+if ([string]::IsNullOrWhiteSpace($expectedTitle)) { throw "Could not read the first line of $titleAdr." }
+
+# The sharp assertion: a file that contains the search term but does NOT live in
+# docs/decisions. Listing that directory cannot reveal it, so only a real search
+# can put it in the handoff. Derived rather than named, so it survives the
+# repository changing under the gate.
+# Restricted to tracked files so the gate behaves the same on a fresh clone
+# rather than depending on whatever untracked scratch happens to be present.
+$searchOnlyFile = @(
+    & git -C $repoRoot ls-files |
+        Where-Object { $_ -notlike 'docs/decisions/*' } |
+        Where-Object {
+            $full = Join-Path $repoRoot ($_ -replace '/', '\')
+            (Test-Path -LiteralPath $full -PathType Leaf) -and
+            (Select-String -LiteralPath $full -SimpleMatch -Pattern $searchTerm -Quiet -ErrorAction SilentlyContinue)
+        } |
+        Sort-Object
+) | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($searchOnlyFile)) {
+    throw "No file outside docs/decisions contains '$searchTerm', so the search arm would prove nothing. Pick a different term."
 }
 
 $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
@@ -211,7 +232,7 @@ try {
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $task = 'Under docs/decisions, find out how many architecture decision records exist and what each one is called. Then find which single record mentions the Windows sandbox setting unelevated, and read that record to get its first line. Report every decision-record filename you found as separate evidence, and also include that first line verbatim as evidence. You are only inspecting the repository, so report no modified files and no tests.'
+    $task = 'Do three things and report all of it as evidence. First, list the files under docs/decisions and report every filename you find, one per evidence item. Second, search the whole repository for the exact text "' + $searchTerm + '" and report which files contain it, including any outside docs/decisions. Third, read ' + $titleAdr + ' and report its exact first line, copied verbatim. You are only inspecting the repository, so report no modified files and no tests.'
     $process.StandardInput.WriteLine($task)
     $process.StandardInput.Close()
 
@@ -283,6 +304,7 @@ $statusCompleted = $false
 $changesEmpty = $false
 $adrsFound = 0
 $titleQuoted = $false
+$searchOnlyFileReported = $false
 if ($schemaExact) {
     $statusCompleted = ([string]$handoff.status) -ceq 'completed'
     $changesEmpty = @($handoff.changes).Count -eq 0
@@ -292,7 +314,8 @@ if ($schemaExact) {
     foreach ($name in $expectedAdrs) {
         if ($reported.Contains($name)) { $adrsFound++ }
     }
-    $titleQuoted = $reported.Contains($expectedTitleFragment)
+    $titleQuoted = $reported.Contains($expectedTitle.Trim())
+    $searchOnlyFileReported = $reported.Contains($searchOnlyFile)
 }
 
 $credentialLeakDetected = $false
@@ -328,6 +351,7 @@ $overallPass = (
     $changesEmpty -and
     $adrsFound -eq $expectedAdrs.Count -and
     $titleQuoted -and
+    $searchOnlyFileReported -and
     $filteredStringCount -gt 0 -and
     $workingTreeUnchanged -and
     -not $credentialLeakDetected
@@ -373,6 +397,8 @@ Write-Output "status_completed=$([bool]$statusCompleted)"
 Write-Output "changes_empty=$([bool]$changesEmpty)"
 Write-Output "decision_records_reported=$adrsFound/$($expectedAdrs.Count)"
 Write-Output "adr_title_quoted=$([bool]$titleQuoted)"
+Write-Output "search_only_file=$searchOnlyFile"
+Write-Output "search_only_file_reported=$([bool]$searchOnlyFileReported)"
 Write-Output "sensitive_filter_applied_to_strings=$filteredStringCount"
 Write-Output "working_tree_unchanged=$([bool]$workingTreeUnchanged)"
 Write-Output "credential_leak_detected=$([bool]$credentialLeakDetected)"

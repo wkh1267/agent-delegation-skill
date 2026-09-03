@@ -28,7 +28,9 @@ $credentialSource = 'none'
 $schemaPath = Join-Path $repoRoot 'skills\delegating-work\schemas\delegent-handoff.schema.json'
 $workerPath = Join-Path $repoRoot 'skills\delegating-work\tools\delegent-nim-worker.js'
 
-$expectedTitle = '# ADR-0001: Make the Worker runtime replaceable and prioritize Codex harness + NVIDIA NIM'
+# Derived, not hardcoded: the gate should track the record rather than go stale
+# if its title is ever edited.
+$titleAdr = 'docs\decisions\0001-codex-nim-worker-runtime.md'
 $seedAffinity = 'delegent:agent-delegation-skills:docs-decisions:explorer'
 $freshAffinity = 'delegent:agent-delegation-skills:docs-decisions:reviewer-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 
@@ -132,6 +134,11 @@ if (-not $node) {
 }
 
 $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
+
+$titleAdrPath = Join-Path $repoRoot $titleAdr
+if (-not (Test-Path -LiteralPath $titleAdrPath -PathType Leaf)) { throw "The gate's reference record $titleAdr is missing." }
+$expectedTitle = ([string](Get-Content -LiteralPath $titleAdrPath -TotalCount 1)).Trim()
+if ([string]::IsNullOrWhiteSpace($expectedTitle)) { throw "Could not read the first line of $titleAdr." }
 
 $runtimeRoot = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'agent-delegation-skills\nim-worker' }
                else { Join-Path ([IO.Path]::GetTempPath()) 'agent-delegation-skills\nim-worker' }

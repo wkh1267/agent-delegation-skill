@@ -4,6 +4,8 @@ This document is the current validation source of truth for the Delegent V0.1 Wo
 
 See also:
 
+- `CONTEXT.md` — project vocabulary
+- `docs/decisions/0003-mutation-boundary.md` — how a Worker may change a repo
 - `docs/decisions/0002-direct-nim-worker-runtime.md` — current runtime decision
 - `docs/decisions/0001-codex-nim-worker-runtime.md` — partially superseded by 0002
 - `evals/codex-nim-harness-plan.md`
@@ -66,9 +68,10 @@ D1  Direct NIM Worker: read + validated handoff         PASS 10/10
 D1b Read-only tool surface: list + search               PASS 5/5
 D2  Worker continuity / session reuse                   PASS 3/3
 D2b Injectable transport so provider retry is testable
-D3  Sandboxing story for a mutating tool surface        NEXT / BLOCKS D4
-D4  Controlled mutation + verifier
+D3  Mutation boundary decision (ADR-0003)               DECIDED
+D4  Controlled mutation + verifier                      NEXT
 D5  Production-candidate Delegent Worker adapter
+D6  Shell tool + real isolation                         SEPARATE GATE
 
 N8  Codex/NIM vs direct-NIM vs OpenCode bake-off
 N9  Controlled Delegent composition (B1/B2 equivalent)
@@ -711,12 +714,44 @@ The fresh Worker declined instead of inventing an answer:
 That fresh arm is also the first time any gate exercised the `blocked` status,
 so both values of the status enum are now covered by a live run.
 
-## D3 — sandboxing blocks mutation — NEXT
+## D3 — mutation boundary — DECIDED, see ADR-0003
 
-The pivot gave up Codex's managed sandbox, so this runtime's tool surface is
-read-only by construction. **Do not unblock D4 by adding a shell or write tool
-to the current runtime.** A real sandbox story comes first; this is the largest
-open cost of the pivot.
+Settled by [ADR-0003](../docs/decisions/0003-mutation-boundary.md) on
+2026-09-04. It turned out not to be a sandbox-selection problem: mutation's
+worst case is recoverable and a command's is not, so the boundary is a staging
+tree plus a narrow tool surface, with `codex sandbox` as a second layer rather
+than the primary control.
+
+```text
+staging tree      git worktree per delegation, outside the user's tree,
+                  lifetime tied to the Worker affinity's session
+tool surface      create and overwrite only; no shell; delete and rename
+                  are escalations
+scope             Lead declares prefixes and exact paths, Worker reports in
+                  the handoff's `changes`, verifier cross-checks the diff
+second layer      the Worker process runs under
+                  `codex sandbox -P :workspace -C <staging tree>`
+```
+
+Mechanism survey, so the unavailable options are not re-proposed: Windows
+Sandbox needs Pro/Enterprise (this host is Home), WSL has zero distros
+registered, Docker's daemon is down with no WSL backend, and codex custom
+profiles need an elevated filesystem-filter driver. `codex sandbox -P :workspace`
+is the only isolation primitive usable today, verified to block writes outside
+cwd on both drives.
+
+Two constraints from that survey that D4 must build around:
+
+- `:workspace` denies `.git` specifically, so a sandboxed Worker cannot commit,
+  add, stash, or checkout. Git reads work. Committing belongs to the unsandboxed
+  orchestrator after the Worker returns.
+- The sandbox scopes writes only. Reads are unrestricted and the network stays
+  open, so it mitigates nothing about exfiltration — which is a further reason
+  the shell waits for its own gate.
+
+**Do not unblock D4 by adding a shell tool.** That remains the most dangerous
+shortcut available here, and it is now explicitly a separate gate rather than a
+missing piece of D4.
 
 ## Superseded Codex-specific gates
 
@@ -873,29 +908,30 @@ D1 (10/10), D1b (5/5) and D2 (3/3) all pass, so the Worker now does read-only
 exploration end to end, reports through the validated boundary, and carries
 context across turns under a Lead-chosen affinity.
 
-**Start D3 — the sandbox story.** This is the gate everything useful is behind,
-and the largest open cost of the pivot. The current tool surface is read-only by
-construction precisely because Codex's managed sandbox is gone; D4 must not be
-unblocked by adding a shell or write tool on top of the present runtime, which
-is the single most dangerous shortcut available in this repo.
-
-D3 is a design decision before it is an implementation, so decide and record it
-in an ADR first. The candidates worth costing, given a Windows host:
+**Start D4 — controlled mutation.** D3 is settled by
+[ADR-0003](../docs/decisions/0003-mutation-boundary.md), so D4 implements it
+rather than re-deciding it. What D4 has to build:
 
 ```text
-Codex sandbox as a subprocess   reuse `codex sandbox -P ...`, which N3 proved
-                                works, purely as a command jail
-Windows RestrictedToken         what Codex itself uses via windows.sandbox
-container / WSL boundary        strongest isolation, heaviest setup
-write-through verifier only     no jail: constrain the tool surface to
-                                specific-path writes plus a working-tree diff
-                                verifier, and keep no shell at all
+staging tree   git worktree per delegation, outside the user's tree, lifetime
+               tied to the affinity's session
+write tool     create and overwrite only, routed through resolveContainedEntry,
+               scoped to the Lead's declared prefixes and exact paths
+verifier       three-way agreement between declared scope, reported `changes`,
+               and the observed diff
+sandbox        the Worker process under
+               `codex sandbox -P :workspace -C <staging tree>`
 ```
 
-The last option deserves a fair hearing: Delegent's mutation need is narrow and
-the Lead reviews every change anyway, so a jail may be less valuable here than a
-tight tool surface plus a verifier that proves nothing outside the declared
-scope moved.
+Two implementation traps already identified, so they are not rediscovered:
+
+- The observed diff must come from `git status --porcelain` and not `git diff`
+  alone, because a newly created file is untracked and invisible to plain
+  `git diff`.
+- A write outside the declared scope and a mismatch between reported changes and
+  the observed diff are **different failures**. The first means our own
+  containment is defective: fail hard, escalate, keep the staging tree, never
+  retry. Only the second is a reject-and-correct case.
 
 Also worth doing near D3, and cheap: **D2b**, an injectable transport so the
 provider-retry path becomes testable rather than only observed.

@@ -7,11 +7,13 @@ code.
 
 ## Sources of truth
 
+- `CONTEXT.md` — the project's vocabulary. Read it before naming a new concept,
+  and challenge it when a term you need conflicts with one already defined.
 - `evals/next-test-plan.md` — gate status, live evidence, and the next gate.
   Read it before starting, resuming, or reporting on any gate.
-- `docs/decisions/` — why the runtime and the handoff boundary are what they
-  are. Read before proposing a change to either. ADR-0002 supersedes ADR-0001's
-  runtime choice; the rest of 0001 still holds.
+- `docs/decisions/` — why the runtime, the handoff boundary, and the mutation
+  boundary are what they are. Read before proposing a change to any of them.
+  ADR-0002 supersedes ADR-0001's runtime choice; the rest of 0001 still holds.
 
 Both are current. Prefer them over any handoff document in the repo root, which
 is a dated snapshot.
@@ -28,11 +30,13 @@ Everything else here is negotiable. These are not.
 - **One validator implementation**, shared by every host that needs it
   (`skills/delegating-work/tools/delegent-schema.js`). A boundary that validates
   differently depending on its caller is not a boundary.
-- **The tool surface is read-only by construction** and stays that way until D3
-  lands a sandbox story. The pivot to a direct NIM loop gave up Codex's managed
-  sandbox; adding a shell or write tool before replacing it is the most
-  dangerous shortcut available in this repo. Every read-only tool routes through
-  `resolveContainedEntry` rather than resolving a model-supplied path itself.
+- **A Worker never changes the user's working tree.** Mutation lands in a
+  staging tree, its scope is declared before the work and cross-checked against
+  the observed diff afterwards, and there is **no shell tool** — adding one is
+  the most dangerous shortcut available in this repo, and it is gated on its own
+  decision. Every tool routes through `resolveContainedEntry` rather than
+  resolving a model-supplied path itself. ADR-0003 has the reasoning; the short
+  version is that a file write is recoverable and a command is not.
 - **Diagnostics emit booleans, counts, and classifications.** A Worker once
   expanded a configured API key into tracked source before review caught it.
   Report `credential_present=True`, never the value, and sanitize any captured
