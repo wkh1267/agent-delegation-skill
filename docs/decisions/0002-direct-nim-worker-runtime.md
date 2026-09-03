@@ -113,10 +113,13 @@ Codex was supplying real things, and they are now gone. This must not be
 quietly assumed back:
 
 - **The sandbox.** There is no managed sandbox any more. The tool surface is
-  therefore read-only *by construction*: one repository read, containment
-  checked on the resolved real path so a symlink cannot walk out, no shell and
-  no writes. `mutation_capable=False` and `shell_tool_present=False` are
-  asserted by the gate, not merely intended.
+  therefore read-only *by construction*: list, search and read, every one
+  routed through a single containment check on the resolved real path so a
+  symlink cannot walk out, with no shell and no writes.
+  `mutation_capable=False` and `shell_tool_present=False` are asserted by the
+  gates, not merely intended. `search` is a literal substring match rather than
+  a regular expression, because a model-supplied regex would be an easy way to
+  hang the Worker.
 - **Mutation is blocked until sandboxing is solved.** The N6-equivalent gate
   cannot proceed by adding a shell tool to this runtime. That needs a real
   sandbox story first, and it is the largest open cost of this decision.
@@ -194,7 +197,14 @@ by design and prior observation, not by test, and closing that gap needs an
 injectable transport. Ten clean runs mean the provider was healthy in that
 window, not that it is reliable.
 
-`evals/test-delegent-boundary.js` pins the boundary deterministically in CI: the
-validator's accept and reject behaviour, the firewall's redactions, and path
+`evals/run-nim-worker-explore.ps1` (D1b) then passed 5/5 over the widened
+read-only surface, using all three tools in every run and reporting exploration
+results the prompt never described the shape of. One of those runs recorded a
+provider retry and still completed correctly, so that path has now been seen
+working live.
+
+`evals/test-delegent-boundary.js` pins the boundary deterministically in CI
+across 63 assertions: the validator's accept and reject behaviour, the
+firewall's redactions, every read-only tool's containment and bounds, and path
 containment including absolute paths, parent-directory escapes, directories and
 symlinks out of the repository.

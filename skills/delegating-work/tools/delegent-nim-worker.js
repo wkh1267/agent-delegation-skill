@@ -12,10 +12,10 @@
 // handoff on that path.
 //
 // What is deliberately given up, and must not be quietly assumed back: Codex
-// supplied the sandbox, the shell tool and session persistence. This runtime
-// has none of them, so its tool surface is read-only by construction -- one
-// repository read, path-contained, no shell and no writes. Mutation work needs
-// a real sandbox story before it can live here.
+// supplied the sandbox, the shell tool and session persistence. This runtime has
+// none of them, so its tool surface is read-only by construction: list, search
+// and read, every one of them path-contained, with no shell and no writes.
+// Mutation work needs a real sandbox story before it can live here.
 //
 // Emits newline-delimited JSON lifecycle events on stdout so a probe can
 // validate a run the same way it validates a Codex run. The credential is never
@@ -109,8 +109,11 @@ function readStdin() {
 // Containment is the security-critical part of the tool surface, so it is a
 // separate exported function with its own tests. It resolves the *real* path
 // before comparing, so a symlink cannot walk out of the repository, and it never
-// creates anything: a missing file is simply reported.
-function resolveContainedPath(root, requested) {
+// creates anything: a missing entry is simply reported.
+//
+// Every read-only tool must route through this. None of them may resolve a
+// model-supplied path themselves.
+function resolveContainedEntry(root, requested) {
   if (typeof requested !== 'string' || requested.length === 0) {
     return { ok: false, reason: 'path is required' };
   }
@@ -123,15 +126,23 @@ function resolveContainedPath(root, requested) {
   try {
     real = fs.realpathSync(path.resolve(realRoot, requested));
   } catch (err) {
-    return { ok: false, reason: 'file not found: ' + requested };
+    return { ok: false, reason: 'path not found: ' + requested };
   }
   if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
     return { ok: false, reason: 'path escapes the repository root' };
   }
-  if (!fs.statSync(real).isFile()) {
-    return { ok: false, reason: 'not a regular file: ' + requested };
-  }
-  return { ok: true, real: real };
+
+  const stats = fs.statSync(real);
+  return { ok: true, real: real, isFile: stats.isFile(), isDirectory: stats.isDirectory() };
+}
+
+// File-only wrapper, kept because most callers want exactly that and because
+// refusing a directory here is a tested property.
+function resolveContainedPath(root, requested) {
+  const entry = resolveContainedEntry(root, requested);
+  if (!entry.ok) return entry;
+  if (!entry.isFile) return { ok: false, reason: 'not a regular file: ' + requested };
+  return { ok: true, real: entry.real };
 }
 
 function readFileTool(args, root) {
@@ -141,6 +152,117 @@ function readFileTool(args, root) {
   const maxLines = args && Number.isInteger(args.max_lines) && args.max_lines > 0 ? args.max_lines : 200;
   const lines = fs.readFileSync(resolved.real, 'utf8').split(/\r?\n/).slice(0, maxLines);
   return { ok: true, output: lines.join('\n') };
+}
+
+// Directories that would dominate any walk without adding anything a Worker
+// needs to reason about.
+const SKIPPED_DIRS = ['.git', 'node_modules'];
+// Bounds so a model-chosen search cannot turn into an unbounded filesystem walk.
+const SEARCH_MAX_FILES = 2000;
+const SEARCH_MAX_FILE_BYTES = 1024 * 1024;
+
+function listFilesTool(args, root) {
+  const requested = args && args.path ? args.path : '.';
+  const entry = resolveContainedEntry(root || repoRoot, requested);
+  if (!entry.ok) return { ok: false, output: entry.reason };
+  if (!entry.isDirectory) return { ok: false, output: 'not a directory: ' + requested };
+
+  const maxEntries = args && Number.isInteger(args.max_entries) && args.max_entries > 0
+    ? Math.min(args.max_entries, 500) : 200;
+
+  const names = fs.readdirSync(entry.real, { withFileTypes: true })
+    .filter((d) => !(d.isDirectory() && SKIPPED_DIRS.indexOf(d.name) !== -1))
+    .slice(0, maxEntries)
+    .map((d) => (d.isDirectory() ? d.name + '/' : d.name));
+
+  if (names.length === 0) return { ok: true, output: '(empty)' };
+  return { ok: true, output: names.join('\n') };
+}
+
+// Literal substring search, deliberately not regex: a model-supplied pattern
+// would otherwise be an easy way to hang the Worker on catastrophic backtracking.
+function searchTool(args, root) {
+  const pattern = args && args.pattern;
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    return { ok: false, output: 'pattern is required' };
+  }
+
+  const requested = args && args.path ? args.path : '.';
+  const entry = resolveContainedEntry(root || repoRoot, requested);
+  if (!entry.ok) return { ok: false, output: entry.reason };
+
+  const maxResults = args && Number.isInteger(args.max_results) && args.max_results > 0
+    ? Math.min(args.max_results, 200) : 50;
+  const realRoot = fs.realpathSync(root || repoRoot);
+
+  const results = [];
+  let filesScanned = 0;
+  let truncated = false;
+
+  const scanFile = (full) => {
+    let stats;
+    try {
+      stats = fs.statSync(full);
+    } catch (err) {
+      return;
+    }
+    if (stats.size > SEARCH_MAX_FILE_BYTES) return;
+
+    filesScanned++;
+    let content;
+    try {
+      content = fs.readFileSync(full, 'utf8');
+    } catch (err) {
+      return;
+    }
+    // A NUL byte means binary; skip it rather than reporting noise.
+    if (content.indexOf(String.fromCharCode(0)) !== -1) return;
+    if (content.indexOf(pattern) === -1) return;
+
+    const relative = path.relative(realRoot, full).split(path.sep).join('/');
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf(pattern) === -1) continue;
+      if (results.length >= maxResults) {
+        truncated = true;
+        return;
+      }
+      const text = lines[i].length > 200 ? lines[i].slice(0, 200) + '...' : lines[i];
+      results.push(relative + ':' + (i + 1) + ': ' + text.trim());
+    }
+  };
+
+  // Symlinks are skipped outright rather than resolved, so the walk cannot leave
+  // the repository even through a directory link.
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      return;
+    }
+    for (const item of entries) {
+      if (results.length >= maxResults || filesScanned >= SEARCH_MAX_FILES) {
+        truncated = true;
+        return;
+      }
+      if (item.isSymbolicLink()) continue;
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        if (SKIPPED_DIRS.indexOf(item.name) !== -1) continue;
+        walk(full);
+        continue;
+      }
+      if (item.isFile()) scanFile(full);
+    }
+  };
+
+  if (entry.isDirectory) walk(entry.real);
+  else scanFile(entry.real);
+
+  if (results.length === 0) return { ok: true, output: 'no matches for: ' + pattern };
+  const header = results.length + ' match(es)' + (truncated ? ' (truncated)' : '') + ':\n';
+  return { ok: true, output: header + results.join('\n') };
 }
 
 const handoffState = { attempts: 0, accepted: false, violations: [] };
@@ -189,6 +311,37 @@ function buildTools() {
   return [
   {
     type: 'function',
+    name: 'list_files',
+    description: 'List the entries of a directory in the repository. Directory names end with a slash. Read-only.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path'],
+      properties: {
+        path: { type: 'string', description: 'Repository-relative directory, for example docs/decisions. Use "." for the root.' },
+        max_entries: { type: 'integer', description: 'Maximum number of entries to return.' }
+      }
+    }
+  },
+  {
+    type: 'function',
+    name: 'search',
+    description:
+      'Search the repository for a literal substring and return matching lines as path:line: text. ' +
+      'Not a regular expression. Read-only.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['pattern'],
+      properties: {
+        pattern: { type: 'string', description: 'Exact text to find. Treated literally, not as a pattern.' },
+        path: { type: 'string', description: 'Repository-relative directory or file to search under. Defaults to the whole repository.' },
+        max_results: { type: 'integer', description: 'Maximum number of matching lines to return.' }
+      }
+    }
+  },
+  {
+    type: 'function',
     name: 'read_file',
     description: 'Read a text file from the repository. Read-only; paths are relative to the repository root.',
     parameters: {
@@ -214,13 +367,19 @@ function buildTools() {
 }
 
 let tools = null;
-const dispatch = { read_file: readFileTool, delegent_handoff: handoffTool };
+const dispatch = {
+  list_files: listFilesTool,
+  search: searchTool,
+  read_file: readFileTool,
+  delegent_handoff: handoffTool
+};
 
 // Nemotron needs the tool contract stated explicitly rather than inferred from
 // the schema alone; that was already true of Codex's exec_command in N3.
 const instructions = [
   'You are a Delegent Worker. Do the delegated task using the provided tools, then report.',
-  'Use read_file to inspect files. Never guess a file\'s contents.',
+  'Use list_files to see what exists, search to locate text, and read_file to inspect a file.',
+  'Never guess a path or a file\'s contents. Look, then report what you actually saw.',
   'Finish by calling delegent_handoff exactly once. That call is the only way to report.',
   'Do not answer in prose instead of calling delegent_handoff.',
   'Every delegent_handoff field is required. Use an empty array for a list with no entries.',
@@ -377,4 +536,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveContainedPath, readFileTool, buildTools };
+module.exports = {
+  resolveContainedEntry,
+  resolveContainedPath,
+  readFileTool,
+  listFilesTool,
+  searchTool,
+  buildTools
+};

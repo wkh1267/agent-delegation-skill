@@ -63,8 +63,8 @@ N6  Controlled mutation + verifier                      SUPERSEDED by D-series
 N7  Production-candidate Codex/NIM adapter              SUPERSEDED by D-series
 
 D1  Direct NIM Worker: read + validated handoff         PASS 10/10
-D1b Read-only tool surface: list + search               NEXT
-D2  Worker continuity / session reuse
+D1b Read-only tool surface: list + search               PASS 5/5
+D2  Worker continuity / session reuse                   NEXT
 D2b Injectable transport so provider retry is testable
 D3  Sandboxing story for a mutating tool surface        BLOCKS D4
 D4  Controlled mutation + verifier
@@ -567,6 +567,79 @@ The boundary itself is pinned deterministically in CI by
 and path containment against absolute paths, parent escapes, directories and
 symlinks out of the repository.
 
+## D1b — read-only tool surface — PASS
+
+Use:
+
+```text
+evals/run-nim-worker-explore.ps1
+```
+
+D1 proved the boundary with a single file read, which is too thin for the work
+most worth delegating. Of the six Worker responsibilities in this plan, three
+need no sandbox at all -- large-repository exploration, huge-file reading and
+code tracing -- and those are exactly the context-heavy jobs that burn Lead
+context. So the surface is now `list_files`, `search` and `read_file`, all still
+read-only.
+
+Design constraints, both enforced by tests rather than convention:
+
+- Every tool routes through `resolveContainedEntry`. None resolves a
+  model-supplied path itself.
+- `search` is a **literal substring** match, not a regular expression. A
+  model-supplied regex would be an easy way to hang the Worker on catastrophic
+  backtracking. The walk also skips symlinks outright rather than resolving
+  them, so it cannot leave the repository through a directory link, and it is
+  bounded by file count, file size and result count.
+
+The gate's expectations are grounded in checked repository facts, and it
+verifies those facts before running so a repository change produces a clear
+error instead of a mysterious failure: `docs/decisions` holds exactly two
+records, and within that directory `unelevated` occurs in 0001 only.
+
+### D1b reliability — 5 consecutive runs, 2026-09-03
+
+```text
+overall PASS                5/5
+list_files_used             5/5
+search_used                 5/5
+read_file_used              5/5
+schema_exact                5/5
+both ADRs reported          5/5
+adr_title_quoted            5/5
+working_tree_unchanged      5/5
+
+tool calls per run  min=3 max=5
+boundary rejections total=0
+provider retries    total=1
+duration seconds    min=14 max=29 mean=22
+```
+
+A representative handoff, produced without the prompt naming a single field:
+
+```json
+{
+  "status": "completed",
+  "summary": "Found two architecture decision records in docs/decisions: ... The record
+              mentioning the Windows sandbox setting unelevated is
+              0001-codex-nim-worker-runtime.md, whose first line is ...",
+  "evidence": [
+    "docs/decisions/0001-codex-nim-worker-runtime.md",
+    "docs/decisions/0002-direct-nim-worker-runtime.md",
+    "# ADR-0001: Make the Worker runtime replaceable and prioritize Codex harness + NVIDIA NIM"
+  ],
+  "changes": [], "tests": [], "risks": [], "decisions_needed": [], "review_targets": []
+}
+```
+
+### Correction: the provider-retry path is no longer uncovered
+
+The D1 section above states that provider retry had no coverage at all. That was
+true when written and is now out of date: one of these five runs recorded
+`provider_retry_count=1` and still completed correctly, so the retry path has
+been observed firing and recovering in a live run. It is still not covered by a
+*test* -- that is what D2b is for -- but it is no longer unevidenced.
+
 ## D3 — sandboxing blocks mutation
 
 The pivot gave up Codex's managed sandbox, so this runtime's tool surface is
@@ -725,20 +798,10 @@ N4 is closed as blocked and the runtime has pivoted. Do not reopen the Codex
 handoff boundary unless a later Codex release changes MCP tool exposure — the
 parked `delegent-handoff-mcp.js` and its tests are what to retry with.
 
-D1 has passed 10/10. **Start D1b — widen the read-only tool surface.**
+D1 passed 10/10 and D1b passed 5/5, so the Worker can now do read-only
+exploration end to end and report through the validated boundary.
 
-The runtime currently offers exactly one repository read, which is too thin for
-the work most worth delegating. Of the six Worker responsibilities in this plan,
-three need no sandbox at all -- large-repository exploration, huge-file reading
-and code tracing -- and those are precisely the context-heavy jobs that burn
-Lead context. Adding `list_files` and `search` keeps the surface read-only and
-delivers a genuinely useful exploration Worker without waiting on D3.
-
-Reuse `resolveContainedPath` for both; containment is already tested against
-absolute paths, parent escapes, directories and symlinks, and every new
-read-only tool must go through it rather than resolving paths itself.
-
-**Then D2 — Worker continuity.** The direct runtime has no session store at
+**Start D2 — Worker continuity.** The direct runtime has no session store at
 all, so decide and validate how a Worker thread is persisted and resumed,
 against the memory rule already in this plan:
 
@@ -757,6 +820,8 @@ Before starting, re-confirm the proven layers still hold on this machine:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-nim-worker-handoff.ps1
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-nim-worker-explore.ps1
 node .\evals\test-delegent-boundary.js
 ```
 

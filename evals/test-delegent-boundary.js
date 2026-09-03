@@ -15,7 +15,14 @@ const path = require('path');
 
 const toolsDir = path.resolve(__dirname, '..', 'skills', 'delegating-work', 'tools');
 const { validate, filterSensitive, filterHandoff } = require(path.join(toolsDir, 'delegent-schema.js'));
-const { resolveContainedPath, readFileTool } = require(path.join(toolsDir, 'delegent-nim-worker.js'));
+const {
+  resolveContainedEntry,
+  resolveContainedPath,
+  readFileTool,
+  listFilesTool,
+  searchTool,
+  buildTools
+} = require(path.join(toolsDir, 'delegent-nim-worker.js'));
 
 const schemaPath = path.resolve(__dirname, '..', 'skills', 'delegating-work', 'schemas', 'delegent-handoff.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
@@ -161,6 +168,64 @@ const readOk = readFileTool({ path: 'README.md', max_lines: 3 }, repoRoot);
 check(readOk.ok, 'read_file reads a contained file');
 check(readOk.output.split('\n').length <= 3, 'read_file honours max_lines');
 check(!readFileTool({ path: '../outside.txt' }, repoRoot).ok, 'read_file refuses an escape');
+
+// ---- list_files ----
+
+const listOk = listFilesTool({ path: 'docs/decisions' }, repoRoot);
+check(listOk.ok, 'list_files lists a contained directory');
+check(listOk.output.indexOf('0001-codex-nim-worker-runtime.md') !== -1,
+  'list_files reports a known file');
+check(!listFilesTool({ path: 'README.md' }, repoRoot).ok,
+  'list_files refuses a file');
+check(!listFilesTool({ path: '../..' }, repoRoot).ok,
+  'list_files refuses a parent escape');
+check(!listFilesTool({ path: path.join(repoRoot, 'evals') }, repoRoot).ok,
+  'list_files refuses an absolute path');
+
+const listRoot = listFilesTool({ path: '.' }, repoRoot);
+check(listRoot.ok, 'list_files accepts the repository root');
+check(listRoot.output.indexOf('evals/') !== -1, 'list_files marks directories with a slash');
+check(listRoot.output.indexOf('.git/') === -1, 'list_files hides .git');
+
+const listCapped = listFilesTool({ path: '.', max_entries: 2 }, repoRoot);
+check(listCapped.output.split('\n').length === 2, 'list_files honours max_entries');
+
+// ---- search ----
+
+// Scoped to docs/decisions, this string occurs in exactly one file, so the
+// assertion does not depend on the rest of the repository.
+const searchScoped = searchTool({ pattern: 'unelevated', path: 'docs/decisions' }, repoRoot);
+check(searchScoped.ok, 'search runs over a contained subtree');
+check(searchScoped.output.indexOf('0001-codex-nim-worker-runtime.md') !== -1,
+  'search finds the known match');
+check(searchScoped.output.indexOf('0002-direct-nim-worker-runtime.md') === -1,
+  'search does not report a file that lacks the pattern');
+check(/:\d+: /.test(searchScoped.output), 'search reports path:line: text');
+
+const searchMiss = searchTool({ pattern: 'zzz-nonexistent-' + Date.now(), path: 'docs' }, repoRoot);
+check(searchMiss.ok && searchMiss.output.indexOf('no matches') !== -1,
+  'search reports no matches without failing');
+
+check(!searchTool({ pattern: '' }, repoRoot).ok, 'search requires a pattern');
+check(!searchTool({ pattern: 'x', path: '../..' }, repoRoot).ok, 'search refuses a parent escape');
+check(!searchTool({ pattern: 'x', path: 'no-such-dir-' + Date.now() }, repoRoot).ok,
+  'search refuses a missing path');
+
+const searchCapped = searchTool({ pattern: 'the', path: 'docs', max_results: 3 }, repoRoot);
+check(searchCapped.output.indexOf('3 match(es)') !== -1, 'search honours max_results');
+check(searchCapped.output.indexOf('(truncated)') !== -1, 'search marks a truncated result set');
+
+// Searching a single file stays on that file rather than walking its directory.
+const searchOneFile = searchTool({ pattern: 'ADR-0001', path: 'docs/decisions/0001-codex-nim-worker-runtime.md' }, repoRoot);
+check(searchOneFile.ok, 'search accepts a single file');
+check(searchOneFile.output.indexOf('0002-') === -1, 'search on a file does not walk its directory');
+
+// ---- advertised tool surface stays read-only ----
+
+check(typeof searchTool === 'function' && typeof listFilesTool === 'function',
+  'the read-only tools are exported for testing');
+check(typeof resolveContainedEntry === 'function',
+  'containment is exported so every tool can share it');
 
 if (failures === 0) {
   process.stdout.write('PASS Delegent boundary ' + checks + ' assertions' +
