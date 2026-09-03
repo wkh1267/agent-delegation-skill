@@ -1,6 +1,6 @@
 # ADR-0001: Make the Worker runtime replaceable and prioritize Codex harness + NVIDIA NIM
 
-- **Status:** Accepted direction; Codex+NIM implementation is gated by compatibility probes
+- **Status:** Partially superseded by [ADR-0002](0002-direct-nim-worker-runtime.md) on 2026-09-03. The runtime choice below did not survive N4: Codex+NIM passed N0-N3 but could provide no machine boundary for the terminal handoff, so the Worker runtime is now a direct NIM loop. Everything here about Delegent being runtime-agnostic, about credential and configuration isolation, and about the Context Firewall still holds, and Codex+NIM remains a working baseline and the bake-off comparison arm.
 - **Date:** 2026-08-31
 - **Scope:** Delegent V0.1 Worker runtime
 - **Supersedes:** The implicit assumption that OpenCode is the required Worker harness

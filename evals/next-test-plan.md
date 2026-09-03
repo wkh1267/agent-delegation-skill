@@ -4,7 +4,8 @@ This document is the current validation source of truth for the Delegent V0.1 Wo
 
 See also:
 
-- `docs/decisions/0001-codex-nim-worker-runtime.md`
+- `docs/decisions/0002-direct-nim-worker-runtime.md` — current runtime decision
+- `docs/decisions/0001-codex-nim-worker-runtime.md` — partially superseded by 0002
 - `evals/codex-nim-harness-plan.md`
 - `evals/v0.1-smoke.md`
 
@@ -31,7 +32,17 @@ Lead/Worker ownership, persistent-vs-fresh Worker policy, compact handoff, decis
 
 OpenCode is retained as a frozen baseline/fallback. Do **not** add more OpenCode-specific lifecycle/plugin workarounds as the next activity.
 
-Codex harness + NVIDIA NIM is now the preferred Worker-runtime candidate under validation.
+As of 2026-09-03 the selected Worker runtime is a **direct NVIDIA NIM loop**
+(`skills/delegating-work/tools/delegent-nim-worker.js`), with the terminal
+handoff carried as validated function-call arguments.
+
+The Codex harness held for N0-N3 but could provide no machine boundary for the
+handoff: `--output-schema` is not enforced by this provider, and Codex never
+exposes an MCP tool to the model on it. That is a structural failure rather than
+a bounded compatibility issue, so the documented pivot rule fired. See
+[ADR-0002](../docs/decisions/0002-direct-nim-worker-runtime.md).
+
+Codex+NIM is kept as a working baseline and bake-off arm, not deleted.
 
 ## Current validation order
 
@@ -46,11 +57,18 @@ N1  Hosted NIM Responses compatibility                  PASS
 N2a Codex config/auth/provider doctor                    PASS
 N2b Minimal `codex exec` Nemotron Worker                PASS
 N3  Real Codex repository tool use                      PASS
-N4  Deterministic terminal handoff via --output-schema  NEXT
-N5  Codex Worker session resume / continuity
-N6  Controlled mutation + verifier
-N7  Production-candidate Codex/NIM adapter
-N8  OpenCode vs Codex/NIM runtime bake-off
+N4  Deterministic terminal handoff via --output-schema  BLOCKED / runtime pivoted
+N5  Codex Worker session resume / continuity            SUPERSEDED by D-series
+N6  Controlled mutation + verifier                      SUPERSEDED by D-series
+N7  Production-candidate Codex/NIM adapter              SUPERSEDED by D-series
+
+D1  Direct NIM Worker: read + validated handoff         PASS
+D2  Worker continuity / session reuse
+D3  Sandboxing story for a mutating tool surface        BLOCKS D4
+D4  Controlled mutation + verifier
+D5  Production-candidate Delegent Worker adapter
+
+N8  Codex/NIM vs direct-NIM vs OpenCode bake-off
 N9  Controlled Delegent composition (B1/B2 equivalent)
 
 C.  Matt implement integration (+ tdd/code-review)      WAITING ON N9
@@ -408,9 +426,110 @@ probes to share one implementation, and runs it over the two real observed
 streams plus negative controls — an unrecognized error, an explicit
 `turn.failed`, a de-duplicated error item, and a clean stream.
 
-## N4 — deterministic terminal handoff — NEXT
+## N4 — deterministic terminal handoff — BLOCKED on Codex+NIM
 
-Now that N3 passes, evaluate Codex-native `--output-schema` as the machine boundary.
+Neither available mechanism could provide a machine boundary on this provider,
+which triggered the runtime pivot. Full reasoning and evidence are in
+[ADR-0002](../docs/decisions/0002-direct-nim-worker-runtime.md); the short form:
+
+```text
+--output-schema   provider does not enforce it (8/10 at the provider),
+                  1 of 7 attempts usable through codex exec, rest hung,
+                  and text.format suppresses function calling (0/3)
+
+MCP tool          server connects (initialize + tools/list traced) but Codex
+                  never exposes MCP tools to the model; only exec_command,
+                  list_mcp_resources and get_goal reach it
+```
+
+Both probes are retained. `probe-nim-structured-output.ps1` characterizes the
+provider and still passes as a characterization gate;
+`run-codex-nim-handoff-schema.ps1` is kept as the failing-boundary record.
+
+### N3's exact-message assertion is model-variance-prone
+
+Observed on 2026-09-03: five N3 runs, four with `agent_message_exact=True` and
+one with `False` while `command_execution_count=1` and the working tree stayed
+clean. Nemotron simply did not reproduce the exact final string that once. Treat
+a lone `agent_message_exact=False` with otherwise healthy fields as variance and
+rerun, the same way the old OpenCode `native server ownership` flake is treated.
+Do not "fix" it by loosening the comparison.
+
+## D1 — direct NIM Worker read + validated handoff — PASS
+
+Use:
+
+```text
+evals/run-nim-worker-handoff.ps1
+```
+
+This replaces N3 and N4 in one pass: owning the loop puts the repository read
+and the validated handoff on the same proven mechanism, function calling.
+
+```text
+node skills/delegating-work/tools/delegent-nim-worker.js
+  --schema skills/delegating-work/schemas/delegent-handoff.schema.json
+  --out <runtime>/delegent-handoff.json
+  --repo <repo root>
+```
+
+PASS requires all of:
+
+```text
+process exit 0 and parseable JSONL
+a real repository read through the read_file tool
+the handoff delivered as validated tool-call arguments, accepted exactly once
+the persisted handoff satisfying the schema exactly, re-validated by the gate
+evidence containing the line only a real read could produce
+the sensitive filter having run over the handoff strings
+mutation_capable=False and shell_tool_present=False
+working tree unchanged, no credential leakage
+```
+
+Live result 2026-09-03:
+
+```text
+process_exit_code=0
+read_file_succeeded=True
+handoff_attempt_count=1
+handoff_rejected_count=0
+handoff_accepted_count=1
+schema_exact=True
+status_completed=True
+evidence_has_readme_line=True
+changes_empty=True
+sensitive_filter_applied_to_strings>0
+working_tree_unchanged=True
+credential_leak_detected=False
+overall=PASS
+```
+
+The gate re-validates the handoff itself rather than trusting the runtime under
+test, and the task prompt never names the handoff fields, so exact conformance
+cannot be explained by prompt-following. A prose answer instead of a tool call
+is pushed back and counted as `prose_answer_rejected_count`, never accepted.
+
+The boundary itself is pinned deterministically in CI by
+`evals/test-delegent-boundary.js`: validator accept/reject, firewall redaction,
+and path containment against absolute paths, parent escapes, directories and
+symlinks out of the repository.
+
+## D3 — sandboxing blocks mutation
+
+The pivot gave up Codex's managed sandbox, so this runtime's tool surface is
+read-only by construction. **Do not unblock D4 by adding a shell or write tool
+to the current runtime.** A real sandbox story comes first; this is the largest
+open cost of the pivot.
+
+## Superseded Codex-specific gates
+
+N5, N6 and N7 were written against the Codex harness. Session resume, controlled
+mutation and the production adapter all still have to happen, but on the runtime
+that owns the loop, so they continue as D2, D4 and D5.
+
+## N4 — original plan, retained for context
+
+The original intent was Codex-native `--output-schema` as the machine boundary.
 
 Normal handoff remains exactly:
 
@@ -438,7 +557,7 @@ confidence
 
 The adapter must still perform exact validation and sensitive filtering. Prompt-only JSON is not an acceptable silent fallback.
 
-## N5 — Worker continuity
+## N5 — Worker continuity — SUPERSEDED by D2
 
 Map stable Delegent Worker identity to Codex thread identity and validate `codex exec resume` for related work.
 
@@ -450,11 +569,11 @@ independent review / security / spec compliance
   -> fresh
 ```
 
-## N6 — controlled mutation
+## N6 — controlled mutation — SUPERSEDED by D4
 
 Use the repository-local fixture/verifier under a controlled write sandbox. Scope, architecture, security-sensitive adapter changes, and final acceptance remain Lead-owned.
 
-## N7 — production candidate adapter
+## N7 — production candidate adapter — SUPERSEDED by D5
 
 Only after N0-N6 pass, implement the production candidate, e.g.:
 
@@ -488,21 +607,27 @@ Codex/NIM becomes the preferred V0.1 Worker runtime only after this composition 
 
 ## Runtime pivot rule
 
-Current status:
+Current status, after the 2026-09-03 pivot:
 
 ```text
 Delegent core      = accepted
-Codex+NIM runtime  = preferred candidate; N0-N3 proven, N4 next
+Direct NIM runtime = selected; D1 proven, D2 next
+Codex+NIM runtime  = working baseline; N0-N3 proven, N4 boundary blocked
 OpenCode runtime   = frozen baseline/fallback
 ```
 
-Do not delete the OpenCode adapter until at least one realistic ticket/spec task passes on the selected replacement runtime.
+The pivot rule fired as written: Codex+NIM failed for a structural reason
+rather than a bounded compatibility issue, and the next candidate in the
+documented order was taken.
 
-If Codex+NIM later fails for a structural reason rather than a bounded compatibility issue, candidate order remains:
+Do not delete the OpenCode adapter, and do not delete the Codex/NIM probes,
+until at least one realistic ticket/spec task passes on the direct NIM runtime.
+Both are now bake-off comparison arms with real live evidence behind them.
+
+Remaining order if the direct NIM runtime also proves structurally unsound:
 
 ```text
-Direct minimal NIM runtime
--> Goose + NIM
+Goose + NIM
 -> revisit OpenCode
 ```
 
@@ -543,21 +668,34 @@ not reopen it, and do not spend further time on
 `diagnose-codex-powershell-profile-gap.ps1`; both are retained only as
 regression controls.
 
-Start N4 — Codex-native `--output-schema` as the machine boundary:
+N4 is closed as blocked and the runtime has pivoted. Do not reopen the Codex
+handoff boundary unless a later Codex release changes MCP tool exposure — the
+parked `delegent-handoff-mcp.js` and its tests are what to retry with.
+
+D1 has passed. **Start D2 — Worker continuity.** The direct runtime has no
+session store at all, so decide and validate how a Worker thread is persisted
+and resumed, against the memory rule already in this plan:
 
 ```text
-Nemotron Worker
--> Codex native tools
--> --output-schema
--> exact Delegent handoff
--> adapter exact validation + sensitive filtering
--> Lead
+same subsystem / follow-up / implement->test->debug -> reuse
+independent review / security / spec compliance      -> fresh
 ```
 
-Prompt-only JSON is not an acceptable fallback for the terminal handoff.
+Do **not** start D4 (controlled mutation) before D3. The current tool surface is
+read-only by construction because the pivot gave up Codex's sandbox, and adding
+a shell or write tool without a sandbox story would be the single most dangerous
+shortcut available here.
 
-Before starting, re-confirm the proven layers still hold on the current machine
-(both are fast and both must stay green):
+Before starting, re-confirm the proven layers still hold on this machine:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-nim-worker-handoff.ps1
+node .\evals\test-delegent-boundary.js
+```
+
+The Codex/NIM baseline should also stay green as the bake-off arm, remembering
+that a lone `agent_message_exact=False` there is model variance:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -566,4 +704,5 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-codex-nim-repo-read.ps1
 ```
 
-Do not integrate Codex/NIM into `$delegent` routing yet. N4, N5, and N6 must pass first.
+Do not integrate any Worker runtime into `$delegent` routing yet. D2, D3 and D4
+must pass first.

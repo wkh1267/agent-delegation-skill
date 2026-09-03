@@ -21,6 +21,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// One boundary implementation, shared with the direct NIM Worker runtime.
+const { validate } = require('./delegent-schema');
 
 const schemaPath = process.argv[2];
 const outPath = process.argv[3];
@@ -37,53 +39,6 @@ const logPath = outPath + '.log.jsonl';
 // otherwise indistinguishable from the outside.
 const rpcLogPath = outPath + '.rpc.jsonl';
 const TOOL_NAME = 'delegent_handoff';
-
-// Exact validation over the JSON Schema subset the Delegent schemas use:
-// an object with a closed property set, string with optional enum, and
-// array of string. Anything outside that subset is reported, never ignored.
-function validate(value, node, at) {
-  const where = at || '$';
-  const violations = [];
-
-  if (node.type === 'object') {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      return [where + ' is not an object'];
-    }
-    const present = Object.keys(value);
-    for (const required of node.required || []) {
-      if (!present.includes(required)) violations.push(where + '.' + required + ' is missing');
-    }
-    const declared = Object.keys(node.properties || {});
-    if (node.additionalProperties === false) {
-      for (const name of present) {
-        if (!declared.includes(name)) violations.push(where + '.' + name + ' is not allowed');
-      }
-    }
-    for (const name of declared) {
-      if (!present.includes(name)) continue;
-      violations.push(...validate(value[name], node.properties[name], where + '.' + name));
-    }
-    return violations;
-  }
-
-  if (node.type === 'array') {
-    if (!Array.isArray(value)) return [where + ' is not an array'];
-    value.forEach((element, index) => {
-      violations.push(...validate(element, node.items, where + '[' + index + ']'));
-    });
-    return violations;
-  }
-
-  if (node.type === 'string') {
-    if (typeof value !== 'string') return [where + ' is not a string'];
-    if (Array.isArray(node.enum) && node.enum.length > 0 && !node.enum.includes(value)) {
-      return [where + ' is outside its allowed values'];
-    }
-    return [];
-  }
-
-  return [where + ' has an unsupported schema type'];
-}
 
 // The log records only counts and outcomes, never submitted content, so it is
 // safe to read while diagnosing a run.

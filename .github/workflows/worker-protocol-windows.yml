@@ -33,6 +33,9 @@ jobs:
           Invoke-TestScript .\evals\test-codex-windows-sandbox-diagnostic-assets.ps1
           Invoke-TestScript .\evals\test-codex-powershell-profile-gap-assets.ps1
 
+          node .\evals\test-delegent-boundary.js
+          if ($LASTEXITCODE -ne 0) { throw 'evals/test-delegent-boundary.js failed' }
+
           $tokens = $null
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\evals\diagnose-terminal-plugin.ps1), [ref]$tokens, [ref]$errors)
