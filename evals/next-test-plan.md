@@ -62,8 +62,10 @@ N5  Codex Worker session resume / continuity            SUPERSEDED by D-series
 N6  Controlled mutation + verifier                      SUPERSEDED by D-series
 N7  Production-candidate Codex/NIM adapter              SUPERSEDED by D-series
 
-D1  Direct NIM Worker: read + validated handoff         PASS
+D1  Direct NIM Worker: read + validated handoff         PASS 10/10
+D1b Read-only tool surface: list + search               NEXT
 D2  Worker continuity / session reuse
+D2b Injectable transport so provider retry is testable
 D3  Sandboxing story for a mutating tool surface        BLOCKS D4
 D4  Controlled mutation + verifier
 D5  Production-candidate Delegent Worker adapter
@@ -509,6 +511,57 @@ test, and the task prompt never names the handoff fields, so exact conformance
 cannot be explained by prompt-following. A prose answer instead of a tool call
 is pushed back and counted as `prose_answer_rejected_count`, never accepted.
 
+### D1 reliability — 10 consecutive runs, 2026-09-03
+
+```text
+overall PASS                       10/10
+read_file_succeeded                10/10
+schema_exact                       10/10
+status_completed                   10/10
+evidence_has_readme_line           10/10
+changes_empty                      10/10
+working_tree_unchanged             10/10
+credential_leak_detected            0/10
+
+handoff attempts    total=10  max=1     (every submission correct first try)
+boundary rejections total=0
+provider retries    total=0
+prose rejections    total=0
+duration seconds    min=7 max=35 mean=22
+```
+
+Twelve successful runs in total including the two before this measurement. This
+is the number that justifies the pivot, against the boundary it replaced:
+
+```text
+text.format at the provider          8/10
+--output-schema through codex exec   1/7
+function-call handoff (D1)          10/10
+```
+
+Same provider, same model, same schema. Function-call arguments are reliably
+well-formed here; schema-constrained final messages are not.
+
+### Two code paths have no live coverage
+
+Worth stating plainly, because 10/10 makes it easy to forget:
+
+- **Boundary rejection never fired live.** `handoff_rejected_count` was 0 in
+  every run, so the reject-then-correct path is covered only by the
+  deterministic tests (`test-delegent-boundary.js`,
+  `test-delegent-handoff-mcp.ps1`). That is adequate coverage, but no live run
+  has exercised it.
+- **Provider retry has no coverage at all**, live or deterministic. The endpoint
+  demonstrably 404s a valid model id and drops response streams -- that was
+  observed repeatedly earlier the same day -- yet `provider_retry_count` was 0
+  across all 10 runs, so provider weather clearly varies by the hour. The retry
+  budget in `delegent-nim-worker.js` is therefore justified by design and by
+  earlier observation, not by test. Closing that gap needs an injectable
+  transport so a test can simulate a 404 and a dropped stream.
+
+Do not read 10/10 as "the provider is reliable". It means the provider was
+healthy during that window.
+
 The boundary itself is pinned deterministically in CI by
 `evals/test-delegent-boundary.js`: validator accept/reject, firewall redaction,
 and path containment against absolute paths, parent escapes, directories and
@@ -672,9 +725,22 @@ N4 is closed as blocked and the runtime has pivoted. Do not reopen the Codex
 handoff boundary unless a later Codex release changes MCP tool exposure — the
 parked `delegent-handoff-mcp.js` and its tests are what to retry with.
 
-D1 has passed. **Start D2 — Worker continuity.** The direct runtime has no
-session store at all, so decide and validate how a Worker thread is persisted
-and resumed, against the memory rule already in this plan:
+D1 has passed 10/10. **Start D1b — widen the read-only tool surface.**
+
+The runtime currently offers exactly one repository read, which is too thin for
+the work most worth delegating. Of the six Worker responsibilities in this plan,
+three need no sandbox at all -- large-repository exploration, huge-file reading
+and code tracing -- and those are precisely the context-heavy jobs that burn
+Lead context. Adding `list_files` and `search` keeps the surface read-only and
+delivers a genuinely useful exploration Worker without waiting on D3.
+
+Reuse `resolveContainedPath` for both; containment is already tested against
+absolute paths, parent escapes, directories and symlinks, and every new
+read-only tool must go through it rather than resolving paths itself.
+
+**Then D2 — Worker continuity.** The direct runtime has no session store at
+all, so decide and validate how a Worker thread is persisted and resumed,
+against the memory rule already in this plan:
 
 ```text
 same subsystem / follow-up / implement->test->debug -> reuse

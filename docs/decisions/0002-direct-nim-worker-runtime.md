@@ -171,6 +171,29 @@ The gate re-validates the persisted handoff itself rather than trusting the
 runtime under test, and its task prompt never names the handoff fields, so exact
 conformance cannot be explained by prompt-following.
 
+Measured over 10 consecutive runs on 2026-09-03, this decision is vindicated on
+the axis it was made on -- same provider, same model, same schema, differing
+only in how the handoff is carried:
+
+```text
+text.format at the provider          8/10
+--output-schema through codex exec   1/7
+function-call handoff (D1)          10/10
+```
+
+Every D1 submission was correct on the first attempt: `handoff_attempt_count`
+was 1 in all ten runs, with zero boundary rejections and zero provider retries.
+Duration ran 7-35s, mean 22s.
+
+Two consequences of that clean result deserve stating, because a perfect score
+hides them. The boundary's reject-then-correct path never fired live, so it is
+covered only by the deterministic tests. And the provider-retry path has no
+coverage at all, live or deterministic, even though the endpoint demonstrably
+404s valid model ids and drops streams at other times of day -- it is justified
+by design and prior observation, not by test, and closing that gap needs an
+injectable transport. Ten clean runs mean the provider was healthy in that
+window, not that it is reliable.
+
 `evals/test-delegent-boundary.js` pins the boundary deterministically in CI: the
 validator's accept and reject behaviour, the firewall's redactions, and path
 containment including absolute paths, parent-directory escapes, directories and
