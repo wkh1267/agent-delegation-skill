@@ -47,6 +47,8 @@ function parseArgs(argv) {
     else if (key === '--base-url') options.baseUrl = value;
     else if (key === '--max-steps') options.maxSteps = parseInt(value, 10);
     else if (key === '--max-handoff-attempts') options.maxHandoffAttempts = parseInt(value, 10);
+    else if (key === '--session') options.session = value;
+    else if (key === '--session-dir') options.sessionDir = value;
     else options.unknown = key;
   }
   return options;
@@ -90,8 +92,79 @@ function init() {
     fail('--schema, --out and --repo are required');
   }
   if (!credential) fail('NIM_API_KEY is required');
+  if (options.session && !options.sessionDir) fail('--session requires --session-dir');
   schema = JSON.parse(fs.readFileSync(options.schemaPath, 'utf8'));
   repoRoot = fs.realpathSync(options.repoRoot);
+}
+
+// ---- Worker continuity ----
+//
+// Continuity is opt-in: with no --session the runtime is stateless, exactly as
+// the D1 and D1b gates validated it. The affinity string is the Delegent
+// identity `delegent:<project>:<scope>:<role>`, and reuse is a placement
+// decision the Lead makes, not something this runtime infers:
+//
+//   same subsystem, follow-up, implement->test->debug  -> reuse
+//   independent review, security, spec compliance      -> fresh
+//
+// State is kept locally rather than through provider-side response ids, because
+// owning the loop was the whole point of the pivot and a hosted store is one
+// more provider behaviour we would have to trust.
+//
+// The stored transcript contains whatever the Worker read, so it belongs outside
+// the repository alongside the other runtime artifacts, and it is bounded: an
+// unbounded transcript would eventually exceed the model's context anyway.
+const SESSION_MAX_ITEMS = 400;
+
+function sessionFileFor(affinity) {
+  // The affinity is a colon-delimited identity, not a path. Flatten it to one
+  // safe filename so it cannot address anything outside the session directory.
+  const safe = affinity.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  const digest = require('crypto').createHash('sha256').update(affinity).digest('hex').slice(0, 12);
+  return path.join(options.sessionDir, safe + '-' + digest + '.json');
+}
+
+function loadSession(affinity) {
+  const file = sessionFileFor(affinity);
+  if (!fs.existsSync(file)) return { input: [], turns: 0, file: file, loaded: false };
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(saved.input)) return { input: [], turns: 0, file: file, loaded: false };
+    return {
+      input: saved.input,
+      turns: Number.isInteger(saved.turns) ? saved.turns : 0,
+      file: file,
+      loaded: true
+    };
+  } catch (err) {
+    // A corrupt session must not take the Worker down; it starts fresh and says so.
+    emit({ type: 'session.unreadable' });
+    return { input: [], turns: 0, file: file, loaded: false };
+  }
+}
+
+function saveSession(affinity, session, input) {
+  const file = sessionFileFor(affinity);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Keep the tail: the most recent exchanges are what a follow-up depends on.
+  const trimmed = input.length > SESSION_MAX_ITEMS ? input.slice(-SESSION_MAX_ITEMS) : input;
+  const payload = {
+    affinity: affinity,
+    turns: session.turns + 1,
+    item_count: trimmed.length,
+    trimmed: trimmed.length < input.length,
+    updated_at: new Date().toISOString(),
+    input: trimmed
+  };
+  const temp = file + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify(payload, null, 2), 'utf8');
+  fs.renameSync(temp, file);
+  emit({
+    type: 'session.saved',
+    turns: payload.turns,
+    item_count: payload.item_count,
+    trimmed: payload.trimmed
+  });
 }
 
 function readStdin() {
@@ -437,7 +510,21 @@ async function main() {
   const threadId = 'delegent-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   emit({ type: 'thread.started', thread_id: threadId });
 
-  const input = [{ role: 'user', content: [{ type: 'input_text', text: task }] }];
+  // A reused Worker starts from the prior transcript, so a follow-up can be
+  // answered from what it already learned instead of re-reading the repository.
+  let session = { input: [], turns: 0, loaded: false };
+  if (options.session) {
+    session = loadSession(options.session);
+    emit({
+      type: 'session.loaded',
+      affinity: options.session,
+      reused: session.loaded,
+      prior_turns: session.turns,
+      prior_item_count: session.input.length
+    });
+  }
+
+  const input = session.input.concat([{ role: 'user', content: [{ type: 'input_text', text: task }] }]);
   let toolCallCount = 0;
   let steps = 0;
   const usage = { input_tokens: 0, output_tokens: 0 };
@@ -511,12 +598,23 @@ async function main() {
     if (handoffState.attempts >= options.maxHandoffAttempts && !handoffState.accepted) break;
   }
 
+  // Persist even when the handoff failed: the exploration the Worker did is
+  // still worth carrying into the retry rather than making it start over.
+  if (options.session) {
+    try {
+      saveSession(options.session, session, input);
+    } catch (err) {
+      emit({ type: 'session.save_failed', message: safe(err && err.message ? err.message : err) });
+    }
+  }
+
   emit({
     type: 'turn.completed',
     steps: steps,
     tool_call_count: toolCallCount,
     handoff_attempts: handoffState.attempts,
     handoff_accepted: handoffState.accepted,
+    session_reused: Boolean(options.session) && session.loaded,
     usage: usage
   });
 

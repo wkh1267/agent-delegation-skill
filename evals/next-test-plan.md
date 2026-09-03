@@ -64,9 +64,9 @@ N7  Production-candidate Codex/NIM adapter              SUPERSEDED by D-series
 
 D1  Direct NIM Worker: read + validated handoff         PASS 10/10
 D1b Read-only tool surface: list + search               PASS 5/5
-D2  Worker continuity / session reuse                   NEXT
+D2  Worker continuity / session reuse                   PASS 3/3
 D2b Injectable transport so provider retry is testable
-D3  Sandboxing story for a mutating tool surface        BLOCKS D4
+D3  Sandboxing story for a mutating tool surface        NEXT / BLOCKS D4
 D4  Controlled mutation + verifier
 D5  Production-candidate Delegent Worker adapter
 
@@ -640,7 +640,78 @@ true when written and is now out of date: one of these five runs recorded
 been observed firing and recovering in a live run. It is still not covered by a
 *test* -- that is what D2b is for -- but it is no longer unevidenced.
 
-## D3 — sandboxing blocks mutation
+## D2 — Worker continuity — PASS
+
+Use:
+
+```text
+evals/run-nim-worker-continuity.ps1
+```
+
+Continuity is opt-in. With no `--session` the runtime is stateless, exactly as
+D1 and D1b validated it, so those gates are unaffected. With `--session <affinity>`
+and `--session-dir`, the transcript is persisted locally and reloaded on the
+next turn.
+
+The affinity is the Delegent identity already in this plan,
+`delegent:<project>:<scope>:<role>`. Reuse stays a Lead placement decision; the
+runtime never infers it.
+
+State is kept as a local transcript rather than through provider-side response
+ids. Owning the loop was the point of the pivot, and a hosted conversation store
+is one more provider behaviour to trust. The transcript holds whatever the
+Worker read, so it lives outside the repository with the other runtime
+artifacts, and it is bounded at 400 items keeping the tail, because an unbounded
+transcript would exceed the model's context anyway.
+
+### Why this gate is a differential
+
+A reused Worker that simply re-read the repository would look identical from
+outside. So the follow-up **forbids tool use**, and the same follow-up goes to a
+fresh Worker as a control. The runtime emits `tool_call` items only for
+non-handoff tools, which makes "did it look something up" directly countable.
+
+```text
+arm 1  seed    session A, do the exploration
+arm 2  reuse   session A, follow-up with tools forbidden  -> must answer
+arm 3  fresh   new session, same follow-up                -> must not answer
+```
+
+The expected answer is a long, specific ADR title, so a fresh Worker producing
+it by guesswork is not a plausible confound.
+
+### D2 result — 3 consecutive runs, 2026-09-03
+
+```text
+overall PASS                    3/3
+continuity_differential         CONTINUITY_PROVEN  3/3
+
+seed    session_reused=False  saved_turns=1  lookups=2  title=True
+reuse   session_reused=True   prior_turns=1  lookups=0  title=True
+fresh   session_reused=False  prior_turns=0  lookups=0  title=False
+```
+
+Both sides of the differential behaved honestly rather than passing on a
+technicality. The reused Worker answered from memory and said so:
+
+```json
+{ "status": "completed",
+  "summary": "Reported the exact first line of 0001-... from prior inspection.",
+  "evidence": ["# ADR-0001: Make the Worker runtime replaceable and prioritize Codex harness + NVIDIA NIM"] }
+```
+
+The fresh Worker declined instead of inventing an answer:
+
+```json
+{ "status": "blocked",
+  "summary": "I do not have prior knowledge of the first line of 0001-... from earlier exchange in this session.",
+  "evidence": [] }
+```
+
+That fresh arm is also the first time any gate exercised the `blocked` status,
+so both values of the status enum are now covered by a live run.
+
+## D3 — sandboxing blocks mutation — NEXT
 
 The pivot gave up Codex's managed sandbox, so this runtime's tool surface is
 read-only by construction. **Do not unblock D4 by adding a shell or write tool
@@ -798,22 +869,36 @@ N4 is closed as blocked and the runtime has pivoted. Do not reopen the Codex
 handoff boundary unless a later Codex release changes MCP tool exposure — the
 parked `delegent-handoff-mcp.js` and its tests are what to retry with.
 
-D1 passed 10/10 and D1b passed 5/5, so the Worker can now do read-only
-exploration end to end and report through the validated boundary.
+D1 (10/10), D1b (5/5) and D2 (3/3) all pass, so the Worker now does read-only
+exploration end to end, reports through the validated boundary, and carries
+context across turns under a Lead-chosen affinity.
 
-**Start D2 — Worker continuity.** The direct runtime has no session store at
-all, so decide and validate how a Worker thread is persisted and resumed,
-against the memory rule already in this plan:
+**Start D3 — the sandbox story.** This is the gate everything useful is behind,
+and the largest open cost of the pivot. The current tool surface is read-only by
+construction precisely because Codex's managed sandbox is gone; D4 must not be
+unblocked by adding a shell or write tool on top of the present runtime, which
+is the single most dangerous shortcut available in this repo.
+
+D3 is a design decision before it is an implementation, so decide and record it
+in an ADR first. The candidates worth costing, given a Windows host:
 
 ```text
-same subsystem / follow-up / implement->test->debug -> reuse
-independent review / security / spec compliance      -> fresh
+Codex sandbox as a subprocess   reuse `codex sandbox -P ...`, which N3 proved
+                                works, purely as a command jail
+Windows RestrictedToken         what Codex itself uses via windows.sandbox
+container / WSL boundary        strongest isolation, heaviest setup
+write-through verifier only     no jail: constrain the tool surface to
+                                specific-path writes plus a working-tree diff
+                                verifier, and keep no shell at all
 ```
 
-Do **not** start D4 (controlled mutation) before D3. The current tool surface is
-read-only by construction because the pivot gave up Codex's sandbox, and adding
-a shell or write tool without a sandbox story would be the single most dangerous
-shortcut available here.
+The last option deserves a fair hearing: Delegent's mutation need is narrow and
+the Lead reviews every change anyway, so a jail may be less valuable here than a
+tight tool surface plus a verifier that proves nothing outside the declared
+scope moved.
+
+Also worth doing near D3, and cheap: **D2b**, an injectable transport so the
+provider-retry path becomes testable rather than only observed.
 
 Before starting, re-confirm the proven layers still hold on this machine:
 
@@ -822,6 +907,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-nim-worker-handoff.ps1
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-nim-worker-explore.ps1
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-nim-worker-continuity.ps1
 node .\evals\test-delegent-boundary.js
 ```
 

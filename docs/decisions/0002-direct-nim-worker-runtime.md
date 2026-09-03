@@ -124,7 +124,11 @@ quietly assumed back:
   cannot proceed by adding a shell tool to this runtime. That needs a real
   sandbox story first, and it is the largest open cost of this decision.
 - **Session persistence and resume.** Codex's thread store and `codex exec
-  resume` both worked and are not replaced. Worker continuity has to be built.
+  resume` both worked and were not replaced. Rebuilt as a local transcript keyed
+  by the Delegent affinity and validated by D2; opt-in, so the stateless path
+  D1 validated is unchanged. Local rather than provider-side response ids,
+  because owning the loop was the point and a hosted conversation store is one
+  more provider behaviour to trust.
 - **Codex's own repository tooling** -- ripgrep integration, apply_patch,
   review mode -- is not available.
 
