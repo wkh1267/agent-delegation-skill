@@ -255,6 +255,62 @@ check(renameInScope.containmentBreach === true,
 check(verifyMutation({ scope: docsScope, reportedChanges: [], observedStatus: '' }).ok,
   'no changes reported and none observed passes');
 
+// ---- the verify CLI, which the live gate drives instead of reimplementing ----
+
+const { execFileSync } = require('child_process');
+const scopeModule = path.join(toolsDir, 'delegent-scope.js');
+
+function runVerifyCli(payload) {
+  try {
+    const stdout = execFileSync(process.execPath, [scopeModule, 'verify'], {
+      input: JSON.stringify(payload), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return { exitCode: 0, verdict: JSON.parse(stdout) };
+  } catch (err) {
+    return { exitCode: err.status, verdict: JSON.parse(String(err.stdout || '{}')) };
+  }
+}
+
+const cliClean = runVerifyCli({
+  scope: { prefixes: ['docs'] },
+  reportedChanges: ['docs/new.md'],
+  observedStatus: '?? docs/new.md '
+});
+check(cliClean.exitCode === 0 && cliClean.verdict.ok, 'the verify CLI exits 0 on agreement');
+
+const cliBreach = runVerifyCli({
+  scope: { prefixes: ['docs'] },
+  reportedChanges: ['src/x.ts'],
+  observedStatus: '?? src/x.ts '
+});
+check(cliBreach.exitCode === 1, 'the verify CLI exits non-zero on disagreement');
+check(cliBreach.verdict.containmentBreach === true, 'the verify CLI reports a containment breach');
+
+// A .NET StreamWriter prefixes a UTF-8 BOM, which is how a PowerShell
+// orchestrator writes stdin. JSON.parse rejects it, so the CLI must tolerate it.
+function runVerifyCliRaw(text) {
+  try {
+    const stdout = execFileSync(process.execPath, [scopeModule, 'verify'], {
+      input: text, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return { exitCode: 0, verdict: JSON.parse(stdout) };
+  } catch (err) {
+    return { exitCode: err.status, verdict: JSON.parse(String(err.stdout || '{}')) };
+  }
+}
+
+const bomPayload = '﻿' + JSON.stringify({
+  scope: { prefixes: ['docs'] },
+  reportedChanges: ['docs/new.md'],
+  observedStatus: '?? docs/new.md '
+});
+const cliBom = runVerifyCliRaw(bomPayload);
+check(cliBom.exitCode === 0 && cliBom.verdict.ok === true, 'the verify CLI tolerates a BOM-prefixed payload');
+
+const cliBadScope = runVerifyCli({ scope: {}, reportedChanges: [], observedStatus: '' });
+check(cliBadScope.exitCode === 2 && cliBadScope.verdict.ok === false,
+  'the verify CLI refuses an empty scope distinctly from a failed verification');
+
 if (failures === 0) {
   process.stdout.write('PASS Delegent mutation boundary ' + checks + ' assertions' +
     (symlinkTested ? ' (incl. symlink writes)' : ' (symlink arms skipped)') + '\n');

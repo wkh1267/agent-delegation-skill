@@ -271,3 +271,47 @@ module.exports = {
   parseGitStatusZ,
   verifyMutation
 };
+
+// A verify CLI so an orchestrator in another language drives this
+// implementation instead of growing a second one. The payload arrives as JSON
+// on stdin because the observed status is NUL-separated and would not survive
+// argv intact.
+//
+//   node delegent-scope.js verify   < payload.json
+//   payload: { scope: {prefixes, paths}, reportedChanges: [...], observedStatus: "..." }
+if (require.main === module) {
+  if (process.argv[2] !== 'verify') {
+    process.stdout.write(JSON.stringify({ ok: false, reason: 'unknown command; expected: verify' }) + '\n');
+    process.exitCode = 2;
+  } else {
+    let raw = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { raw += chunk; });
+    process.stdin.on('end', () => {
+      let payload;
+      try {
+        // A .NET StreamWriter — which is what a PowerShell orchestrator writes
+        // stdin through — prefixes a UTF-8 BOM, and JSON.parse rejects it. Strip
+        // it here rather than requiring every caller to know that.
+        payload = JSON.parse(raw.replace(/^\uFEFF/, '').trim());
+      } catch (err) {
+        process.stdout.write(JSON.stringify({ ok: false, reason: 'stdin was not valid JSON' }) + '\n');
+        process.exitCode = 2;
+        return;
+      }
+      const parsed = parseScope(payload.scope);
+      if (!parsed.ok) {
+        process.stdout.write(JSON.stringify({ ok: false, reason: parsed.reason }) + '\n');
+        process.exitCode = 2;
+        return;
+      }
+      const verdict = verifyMutation({
+        scope: parsed.scope,
+        reportedChanges: payload.reportedChanges,
+        observedStatus: payload.observedStatus
+      });
+      process.stdout.write(JSON.stringify(verdict) + '\n');
+      process.exitCode = verdict.ok ? 0 : 1;
+    });
+  }
+}

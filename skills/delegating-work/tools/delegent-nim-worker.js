@@ -696,6 +696,12 @@ async function main() {
     handoff_attempts: handoffState.attempts,
     handoff_accepted: handoffState.accepted,
     session_reused: Boolean(options.session) && session.loaded,
+    mutation_scope_declared: Boolean(mutationScope),
+    writes: writeState.writes,
+    // A refused write is the boundary working, so the count is reported rather
+    // than treated as an error. Its value is evidence that the refusal path was
+    // actually exercised.
+    out_of_scope_write_attempts: writeState.outOfScopeAttempts,
     usage: usage
   });
 
