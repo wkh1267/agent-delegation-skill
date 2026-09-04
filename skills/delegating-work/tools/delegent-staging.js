@@ -28,6 +28,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+// One canonicaliser, shared, because containment depends on it.
+const { canonicalPath } = require('./delegent-scope');
 
 function git(repoRoot, args) {
   try {
@@ -75,7 +77,7 @@ function samePath(a, b) {
   if (!a || !b) return false;
   const normalize = (value) => {
     let resolved = value;
-    try { resolved = fs.realpathSync(value); } catch (err) { resolved = path.resolve(value); }
+    try { resolved = canonicalPath(value); } catch (err) { resolved = path.resolve(value); }
     resolved = path.normalize(resolved).replace(/[\\/]+$/, '');
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
   };

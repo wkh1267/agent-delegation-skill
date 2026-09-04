@@ -18,6 +18,24 @@ const path = require('path');
 
 const MAX_WRITE_BYTES = 1024 * 1024;
 
+// Canonicalising a path is security-critical here -- every containment check
+// compares against one -- so it has a single implementation.
+//
+// `fs.realpathSync` resolves symlinks but does NOT expand Windows 8.3 short
+// names. CI proved the difference: a runner produced
+// `C:\Users\RUNNER~1\...` on one side and `C:\Users\runneradmin\...` on the
+// other for the same directory, and a containment check comparing them would
+// answer "different" about one path. `realpathSync.native` expands both,
+// because it asks Windows for the final name rather than walking links itself.
+function canonicalPath(target) {
+  try {
+    if (typeof fs.realpathSync.native === 'function') return fs.realpathSync.native(target);
+  } catch (err) {
+    // Fall through: a missing path is the caller's problem to report.
+  }
+  return fs.realpathSync(target);
+}
+
 // Windows paths are case-insensitive, so `DOCS/x` and `docs/x` are the same
 // file. Comparing case-sensitively would let the filesystem fold a path into a
 // directory the scope check thought it had rejected. Folding matches the
@@ -126,7 +144,7 @@ function resolveWriteTarget(root, scope, relativePath) {
 
   let realRoot;
   try {
-    realRoot = fs.realpathSync(root);
+    realRoot = canonicalPath(root);
   } catch (err) {
     return { ok: false, reason: 'staging root does not exist' };
   }
@@ -146,7 +164,7 @@ function resolveWriteTarget(root, scope, relativePath) {
 
   let realAncestor;
   try {
-    realAncestor = fs.realpathSync(ancestor);
+    realAncestor = canonicalPath(ancestor);
   } catch (err) {
     return { ok: false, reason: 'could not resolve an existing parent of the path' };
   }
@@ -263,6 +281,7 @@ function verifyMutation(input) {
 
 module.exports = {
   MAX_WRITE_BYTES,
+  canonicalPath,
   normalizeRepoPath,
   parseScope,
   isInScope,

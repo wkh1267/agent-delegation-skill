@@ -94,6 +94,18 @@ check(staging.samePath(os.tmpdir(), os.tmpdir() + path.sep),
 if (process.platform === 'win32') {
   check(staging.samePath(os.tmpdir().toUpperCase(), os.tmpdir().toLowerCase()),
     'case is folded on Windows, as the filesystem does');
+
+  // The assertion that would have caught the CI failure. A GitHub runner has
+  // TEMP as the 8.3 short form (C:\Users\RUNNER~1\...) while git reports the long
+  // form (C:\Users\runneradmin\...). fs.realpathSync does not expand short names;
+  // only realpathSync.native does. On a machine where the two already agree
+  // this passes trivially, which is fine -- it exists for the machine where
+  // they do not.
+  const envTemp = process.env.TEMP || process.env.TMP;
+  if (envTemp) {
+    check(staging.samePath(envTemp, os.tmpdir()),
+      'the short and long forms of TEMP resolve to the same path');
+  }
 }
 
 // ---- create, reuse, remove ----
@@ -115,16 +127,6 @@ const headState = git(created.path, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(
 check(headState === 'HEAD', 'the staging tree is checked out detached, creating no branch');
 check(git(repo, ['branch', '--list']).indexOf(staging.flattenAffinity(affinity)) === -1,
   'no branch is created in the parent repository');
-
-// Diagnostic: this comparison failed on a CI runner and could not be
-// reproduced locally, so the runner has to report the actual strings.
-{
-  const listedForDebug = staging.listWorktrees(repo);
-  process.stdout.write('DEBUG staging=' + JSON.stringify(created.path) +
-    ' worktrees=' + JSON.stringify(listedForDebug.paths) +
-    ' listOk=' + listedForDebug.ok +
-    ' registered=' + staging.isRegisteredWorktree(repo, created.path) + '\n');
-}
 
 const reused = staging.ensureStagingTree({ repoRoot: repo, baseDir: base, affinity: affinity });
 check(reused.ok && reused.reused === true && reused.created === false, 'a second ensure reuses the same tree');

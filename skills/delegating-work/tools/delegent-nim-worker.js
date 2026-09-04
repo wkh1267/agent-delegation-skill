@@ -33,6 +33,7 @@ const path = require('path');
 const { validate, filterHandoff } = require('./delegent-schema');
 const {
   MAX_WRITE_BYTES,
+  canonicalPath,
   parseScope,
   describeScope,
   resolveWriteTarget
@@ -106,7 +107,7 @@ function init() {
   if (!credential) fail('NIM_API_KEY is required');
   if (options.session && !options.sessionDir) fail('--session requires --session-dir');
   schema = JSON.parse(fs.readFileSync(options.schemaPath, 'utf8'));
-  repoRoot = fs.realpathSync(options.repoRoot);
+  repoRoot = canonicalPath(options.repoRoot);
 
   if (options.scopePrefixes || options.scopePaths) {
     const parsed = parseScope({ prefixes: options.scopePrefixes, paths: options.scopePaths });
@@ -212,10 +213,10 @@ function resolveContainedEntry(root, requested) {
     return { ok: false, reason: 'path must be relative to the repository root' };
   }
 
-  const realRoot = fs.realpathSync(root);
+  const realRoot = canonicalPath(root);
   let real;
   try {
-    real = fs.realpathSync(path.resolve(realRoot, requested));
+    real = canonicalPath(path.resolve(realRoot, requested));
   } catch (err) {
     return { ok: false, reason: 'path not found: ' + requested };
   }
