@@ -1073,7 +1073,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-nim-worker-explore.ps1
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-nim-worker-continuity.ps1
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-nim-worker-mutate.ps1
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\evals\run-nim-worker-sandboxed.ps1
 node .\evals\test-delegent-boundary.js
+node .\evals\test-delegent-mutation.js
+node .\evals\test-delegent-staging.js
+node .\evals\test-delegent-sandbox.js
 ```
 
 The Codex/NIM baseline should also stay green as the bake-off arm, remembering
@@ -1086,5 +1093,5 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\evals\run-codex-nim-repo-read.ps1
 ```
 
-Do not integrate any Worker runtime into `$delegent` routing yet. D2, D3 and D4
-must pass first.
+Do not integrate any Worker runtime into `$delegent` routing yet. D5 and the
+N9 composition gate come first.
