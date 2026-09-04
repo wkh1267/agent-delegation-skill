@@ -116,6 +116,16 @@ check(headState === 'HEAD', 'the staging tree is checked out detached, creating 
 check(git(repo, ['branch', '--list']).indexOf(staging.flattenAffinity(affinity)) === -1,
   'no branch is created in the parent repository');
 
+// Diagnostic: this comparison failed on a CI runner and could not be
+// reproduced locally, so the runner has to report the actual strings.
+{
+  const listedForDebug = staging.listWorktrees(repo);
+  process.stdout.write('DEBUG staging=' + JSON.stringify(created.path) +
+    ' worktrees=' + JSON.stringify(listedForDebug.paths) +
+    ' listOk=' + listedForDebug.ok +
+    ' registered=' + staging.isRegisteredWorktree(repo, created.path) + '\n');
+}
+
 const reused = staging.ensureStagingTree({ repoRoot: repo, baseDir: base, affinity: affinity });
 check(reused.ok && reused.reused === true && reused.created === false, 'a second ensure reuses the same tree');
 check(reused.path === created.path, 'reuse resolves to the same path');
