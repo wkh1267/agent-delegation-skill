@@ -72,7 +72,7 @@ D3  Mutation boundary decision (ADR-0003)               DECIDED
 D4a Scope matching + write tool + verifier (no model)   PASS 88 assertions
 D4b Staging tree lifecycle (no model)                   PASS 53 assertions
 D4c Live controlled mutation gate                       PASS 3/3
-D4d codex sandbox wrapper                               NEXT
+D4d codex sandbox wrapper                               PASS
 D5  Production-candidate Delegent Worker adapter
 D6  Shell tool + real isolation                         SEPARATE GATE
 
@@ -787,6 +787,82 @@ green run from implying more than it showed.
   Distinct exit codes now separate "verification failed" from "the payload was
   bad".
 
+## D4d — the sandbox layer — PASS
+
+Use:
+
+```text
+evals/run-nim-worker-sandboxed.ps1
+```
+
+The whole Worker process runs under `codex sandbox -P :workspace -C <staging
+tree>`. Our tool layer stays the primary control because it enforces the declared
+scope rather than just a directory; this is the floor beneath it.
+
+### The gate refuses to run on an unverified boundary
+
+A gate that assumed the sandbox was on would pass exactly as happily with it off,
+which would make the layer theatre. So `delegent-sandbox.js verify` runs a child
+under the same sandbox before any Worker turn and checks two things, because
+either alone is misleading:
+
+```text
+inside the staging tree    must be allowed   (a sandbox denying everything
+                                              would look "enforcing" and be
+                                              useless)
+outside it                 must be denied
+network                    must be reachable (a Worker cannot reach its provider
+                                              otherwise)
+```
+
+Only `usable = enforcing AND networkUsable` lets the gate proceed.
+
+### Live result
+
+```text
+sandbox_enforcing               True
+sandbox_probe_inside            allowed
+sandbox_probe_outside           denied
+sandbox_probe_network           reachable:200
+first  wrote docs/delegent-d4d-first.md,  session_saved_turns=1
+second wrote docs/delegent-d4d-second.md, session_reused=True, saved_turns=2
+continuity_survived_sandbox     True
+user_working_tree_unchanged     True
+worktrees_remaining             1
+```
+
+### Both predicted breakages were real
+
+The plan predicted the artifact paths would break, and they did — but a second,
+unpredicted one mattered more.
+
+**Artifacts.** Under `:workspace` only the cwd and `%LOCALAPPDATA%\Temp` are
+writable. The handoff and session transcript lived under
+`%LOCALAPPDATA%\agent-delegation-skills\`, which is not `Temp`, so both writes
+were denied. They now live in TEMP. The second turn exists specifically to prove
+session *load* works from there, not merely that a save did not error.
+
+**Network, which was not predicted.** The first sandboxed run failed with
+`fetch failed` three retries deep. The cause was the user's global
+`~/.codex/config.toml` carrying `[windows] sandbox = "elevated"`: the elevated
+backend contains writes but blocks outbound network, so the Worker could not
+reach its provider. A three-way comparison isolated it:
+
+```text
+default (user global config, elevated)   NET fail
+isolated codex-nim home (unelevated)     NET ok 200
+fresh empty home                         NET ok 200
+```
+
+`delegent-sandbox.js` now supplies its own `CODEX_HOME` with
+`[windows] sandbox = "unelevated"` and never reads the user's, so behaviour comes
+from configuration this repo controls. A drifted config is rewritten rather than
+trusted, and a test asserts that.
+
+This is also why the enforcement precheck grew the network arm: without it, a
+misconfigured backend surfaces as provider retries rather than as one line
+saying the sandbox is unusable.
+
 ## D3 — mutation boundary — DECIDED, see ADR-0003
 
 Settled by [ADR-0003](../docs/decisions/0003-mutation-boundary.md) on
@@ -977,68 +1053,16 @@ N4 is closed as blocked and the runtime has pivoted. Do not reopen the Codex
 handoff boundary unless a later Codex release changes MCP tool exposure — the
 parked `delegent-handoff-mcp.js` and its tests are what to retry with.
 
-D1 (10/10), D1b (5/5) and D2 (3/3) all pass, so the Worker now does read-only
-exploration end to end, reports through the validated boundary, and carries
-context across turns under a Lead-chosen affinity.
+D1, D1b, D2 and the whole D4 series now pass, so the Worker explores, mutates
+inside a declared scope, reports through the validated boundary, carries context
+across turns, and does all of it inside a verified sandbox.
 
-**Start D4a.** D3 is settled by
-[ADR-0003](../docs/decisions/0003-mutation-boundary.md), so D4 implements it
-rather than re-deciding it — but as four gates, not one, because it carries four
-different kinds of risk and this repo's gate granularity is one claim per gate.
-Ordered by verifiability, not by size:
-
-```text
-D4a  scope matching, write tool, verifier   no model, no network, all in CI
-D4b  staging tree lifecycle                 needs only git, still no model
-D4c  live controlled mutation               the Worker actually changes a file
-D4d  codex sandbox wrapper                  highest integration risk, so last
-```
-
-D4a first because the security-critical logic lives there — scope matching,
-containment, and the split between the two failure modes — and none of it needs
-a single live turn to prove. Pin it in CI, and when a later gate misbehaves you
-already know it is not that.
-
-**D4d is separate for a concrete reason, not out of caution.** Today the Worker
-writes its handoff and its session transcript here:
-
-```text
-<LOCALAPPDATA>\agent-delegation-skills\nim-worker\delegent-handoff.json
-<LOCALAPPDATA>\agent-delegation-skills\nim-worker\sessions\
-```
-
-Under `:workspace` only the cwd and `%LOCALAPPDATA%\Temp` are writable, and
-extra writable roots cannot be added unelevated. `agent-delegation-skills\` is
-not `Temp`, so wrapping the Worker in the sandbox will deny both writes — which
-would break the continuity D2 just proved. The fix is small (move both under
-TEMP or inside the staging tree), but bundled into a bigger gate it surfaces as
-"mutation failed" and costs an hour to trace.
-
-What D4 has to build in total:
-
-```text
-staging tree   git worktree per delegation, outside the user's tree, lifetime
-               tied to the affinity's session
-write tool     create and overwrite only, routed through resolveContainedEntry,
-               scoped to the Lead's declared prefixes and exact paths
-verifier       three-way agreement between declared scope, reported `changes`,
-               and the observed diff
-sandbox        the Worker process under
-               `codex sandbox -P :workspace -C <staging tree>`
-```
-
-Two implementation traps already identified, so they are not rediscovered:
-
-- The observed diff must come from `git status --porcelain` and not `git diff`
-  alone, because a newly created file is untracked and invisible to plain
-  `git diff`.
-- A write outside the declared scope and a mismatch between reported changes and
-  the observed diff are **different failures**. The first means our own
-  containment is defective: fail hard, escalate, keep the staging tree, never
-  retry. Only the second is a reject-and-correct case.
-
-Also worth doing near D3, and cheap: **D2b**, an injectable transport so the
-provider-retry path becomes testable rather than only observed.
+**Next: D5, the production-candidate adapter**, which is where the duplicated
+PowerShell schema validators across the live gates finally consolidate. D2b (an
+injectable transport, so the provider-retry path becomes testable rather than
+only observed) is still open and cheap. D6, the shell tool, stays a separate gate
+and needs its own decision: the sandbox scopes writes only, leaving reads and
+network open, so it does nothing about exfiltration.
 
 Before starting, re-confirm the proven layers still hold on this machine:
 

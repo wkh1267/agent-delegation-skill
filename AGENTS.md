@@ -97,6 +97,23 @@ backend comes back as the literal string `<redacted>`, while `disabled` prints
 verbatim — so matching on a backend name can never succeed.
 → Gate it negatively, against `disabled`.
 
+**The Windows sandbox backend decides whether the sandbox has network.** The
+`elevated` backend contains writes but *blocks outbound network*, so a Worker
+run under it dies at its provider with `fetch failed` and nothing pointing at the
+cause. `unelevated` contains writes and keeps network. The backend comes from
+whichever `config.toml` is in scope, so the user's global `~/.codex/config.toml`
+silently decides it.
+→ Give the sandbox its own `CODEX_HOME` (`delegent-sandbox.js` does), never the
+user's, and check containment *and* network before running a Worker rather than
+assuming either.
+
+**Under `:workspace` only the cwd and `%LOCALAPPDATA%\Temp` are writable**, and
+extra writable roots cannot be added without elevation. Anything the sandboxed
+process must write — a handoff, a session transcript — has to live in one of
+those two. `%LOCALAPPDATA%\agent-delegation-skills\` is *not* `Temp`.
+→ Put sandboxed artifacts under TEMP or inside the staging tree, and remember
+`.git` is denied even inside the cwd, so a sandboxed process cannot commit.
+
 **`Get-Command codex` resolves `codex.ps1` before `codex.cmd`.** The npm
 PowerShell shim fails on redirected stdin.
 → Probe `codex.exe` → `codex.cmd` → `codex.ps1`, in that order.
