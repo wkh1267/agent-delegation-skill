@@ -77,9 +77,10 @@ D5  Delegent entry point (delegent.js)                  PASS
 D6  Shell tool + real isolation                         SEPARATE GATE
 
 N8  Runtime bake-off                                    CLOSED by the gates
-N9  Controlled Delegent composition (B1/B2 equivalent)
+N9  Controlled Delegent composition (B1/B2)             PASS
+N10 Escalation gate (decisions_needed, unproven live)    OPEN
 
-C.  Matt implement integration (+ tdd/code-review)      WAITING ON N9
+C.  Matt implement integration (+ tdd/code-review)      READY
 D.  Real ticket/spec development                        WAITING ON C
 ```
 
@@ -1074,7 +1075,80 @@ OpenCode re-opens only if someone wants to spend time on
 A latency or cost comparison, if ever wanted, is cheap to add later against
 `delegent.js` — but it is a product question, not a runtime-selection one.
 
-## N9 — controlled Delegent composition
+## N9 — controlled Delegent composition — PASS, with a placement lesson
+
+Run on real work rather than a synthetic harness: `delegent.js` already is the
+harness, so N9 only needed a genuine task and a genuine Lead review.
+
+### B1 — kept local
+
+Marking N8 closed was a one-line edit needing no repository context. Delegating
+it would have cost a live turn plus a review to save nothing. Rule applied:
+**no significant context to gather, Lead keeps it.** That decision is the B1
+result; there is nothing to run.
+
+### B2 — delegated, and mis-placed the first time
+
+The task was a capability audit of the `evals/` scripts: which need network, a
+credential, or the codex binary. Real legwork, read-only, exactly the
+"large-repository exploration" a Worker is for.
+
+It failed twice before it succeeded, and the failures were the useful part:
+
+```text
+attempt 1   all ~20 scripts   no handoff: the Worker never reached one
+attempt 2   all ~20 scripts   killed at the 300s budget
+attempt 3   only probe-*      completed, accepted
+```
+
+**The lesson is about placement, not the runtime.** A twenty-file audit exceeds
+what this Worker completes in one delegation. Delegent's question is never "make
+the Worker do anything" — it is whether the Lead placed the work correctly, and
+the first two attempts were the Lead placing it badly. Narrowing the scope is
+the fix, and narrowing is a Lead move.
+
+### Three defects real usage found that no gate had
+
+Every one of these was invisible to the gates because gates use fixed tasks that
+succeed:
+
+- **A failed run reported the previous run's handoff.** `--out` defaults to one
+  path, a failed Worker writes nothing, and the entry point then read the stale
+  file and returned it as this run's result. A Lead could have accepted a handoff
+  belonging to a different task. The artifact is now removed before every run.
+- **A failure reported nothing.** No reason reached the Lead. Failures are now
+  surfaced from the Worker's own event stream, including the case that produces
+  no error at all: running out of steps without reaching a handoff.
+- **A timeout looked like silence.** `spawnSync` reports a killed child as a null
+  status, so the budget being hit arrived as a blank. It now says so, and both
+  `--max-steps` and `--timeout` are tunable rather than baked in.
+
+### Lead review of the accepted handoff
+
+The handoff claimed, for both `probe-*` scripts, `network=yes credential=yes
+codex=no`. Verified independently rather than accepted:
+
+`probe-nim-structured-output.ps1` contains **six** occurrences of "codex" — which
+a naive check would score as `codex=yes`. Reading them shows comments, one error
+string, and the `codex_output_schema` *schema name*; the binary is never invoked.
+The Worker's `codex=no` is correct, and it resisted precisely the trap the task
+warned about, where a grep gives a false positive.
+
+**Accepted.** The handoff was compact, accurate, and checkable, and the Lead
+review confirmed rather than rubber-stamped it.
+
+### What N9 proves, and what it does not
+
+Proven: placement is a real decision with real consequences, the Context
+Firewall delivers something a Lead can actually act on, and Lead acceptance is
+a verification step rather than a formality.
+
+Not proven: escalation. No run in this gate produced a `decisions_needed` entry,
+because none of these tasks contained a decision a Worker should refuse to make.
+That path has deterministic coverage only, and a task designed to force an
+escalation is still owed.
+
+## N9 — original intent
 
 Run the existing B1/B2 intent:
 

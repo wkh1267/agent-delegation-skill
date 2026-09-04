@@ -40,6 +40,8 @@ function parseArgs(argv) {
     else if (k === '--scope-path') o.scopePaths.push(v);
     else if (k === '--session') o.session = v;
     else if (k === '--out') o.out = v;
+    else if (k === '--max-steps') o.maxSteps = v;
+    else if (k === '--timeout') o.timeout = v;
     else o.unknown = k;
   }
   return o;
@@ -81,6 +83,8 @@ function plan(options) {
     session: options.session || null,
     sessionDir: options.session ? path.join(temp, 'sessions') : null,
     out: options.out || path.join(temp, 'handoff.json'),
+    maxSteps: options.maxSteps || null,
+    timeoutMs: (parseInt(options.timeout, 10) || 300) * 1000,
     stagingBase: path.join(temp, 'staging')
   };
 }
@@ -95,6 +99,7 @@ function runWorker(p, cwd, sandboxed) {
   for (const prefix of (p.scope ? p.scope.prefixes : [])) args.push('--scope-prefix', prefix);
   for (const exact of (p.scope ? p.scope.paths : [])) args.push('--scope-path', exact);
   if (p.session) args.push('--session', p.session, '--session-dir', p.sessionDir);
+  if (p.maxSteps) args.push('--max-steps', String(p.maxSteps));
 
   let file = process.execPath;
   let spawnArgs = args;
@@ -117,15 +122,28 @@ function runWorker(p, cwd, sandboxed) {
     env = Object.assign({}, process.env, { CODEX_HOME: sandbox.ensureSandboxHome(null) });
   }
 
+  // Remove any previous run's handoff first. Without this a failed run reads the
+  // last successful one and reports it as its own -- a Lead could accept a
+  // handoff belonging to a different task entirely.
+  try { fs.unlinkSync(p.out); } catch (err) { /* absent is the normal case */ }
+
   const run = spawnSync(file, spawnArgs, {
     cwd: cwd,
     env: env,
     input: p.task + '\n',
     encoding: 'utf8',
     windowsVerbatimArguments: verbatim,
-    timeout: 300000
+    timeout: p.timeoutMs
   });
-  return { ok: true, code: run.status, stdout: String(run.stdout || '') };
+  return {
+    ok: true,
+    code: run.status,
+    // spawnSync reports a killed child as a null status, so a timeout would
+    // otherwise reach the Lead as an unexplained blank.
+    timedOut: run.status === null,
+    stdout: String(run.stdout || ''),
+    stderr: String(run.stderr || '')
+  };
 }
 
 function main() {
@@ -172,6 +190,38 @@ function main() {
     staging_tree: stagingPath,
     worker_exit: run.code
   };
+
+  // A failed run must say why. The Worker already reports its own failures on the
+  // event stream, so surface those rather than making the Lead re-run to see them.
+  if (!result.ok) {
+    if (run.timedOut) {
+      result.timed_out = true;
+      result.failures = ['the Worker was killed at the ' + (p.timeoutMs / 1000) +
+        's budget; narrow the task or raise --timeout'];
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.exitCode = 1;
+      return;
+    }
+    result.failures = run.stdout.split(/\r?\n/)
+      .map((line) => { try { return JSON.parse(line); } catch (err) { return null; } })
+      .filter((e) => e && (e.type === 'error' || (e.item && e.item.type === 'handoff' && !e.item.accepted)))
+      .map((e) => (e.type === 'error' ? e.message : 'handoff rejected: ' + (e.item.violations || []).join('; ')));
+    // A Worker that simply ran out of steps reports no error at all -- it just
+    // never reaches the handoff. That is the most likely failure on a genuinely
+    // context-heavy task, so it must not surface as an empty reason.
+    if (result.failures.length === 0) {
+      const done = run.stdout.split(/\r?\n/)
+        .map((line) => { try { return JSON.parse(line); } catch (err) { return null; } })
+        .filter((e) => e && e.type === 'turn.completed').pop();
+      if (done && !done.handoff_accepted) {
+        result.failures = ['no handoff after ' + done.steps + ' steps (' +
+          done.tool_call_count + ' tool calls); raise --max-steps if the task needs more'];
+      }
+    }
+    if (result.failures.length === 0 && run.stderr.trim()) {
+      result.failures = [run.stderr.trim().split(/\r?\n/).slice(0, 4).join(' | ')];
+    }
+  }
 
   if (p.mutating && handoff) {
     const observed = staging.observeChanges(stagingPath);
