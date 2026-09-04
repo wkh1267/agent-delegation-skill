@@ -67,20 +67,25 @@ function listWorktrees(repoRoot) {
   return { ok: true, paths: paths };
 }
 
+// Windows path comparison cannot be exact-string. git reports the path it
+// recorded, which may differ from ours in drive-letter case, separator, or 8.3
+// short form (a CI runner's TEMP is often RUNNER~1). realpath resolves most of
+// that, but not case, so comparison folds case on win32 as the filesystem does.
+function samePath(a, b) {
+  if (!a || !b) return false;
+  const normalize = (value) => {
+    let resolved = value;
+    try { resolved = fs.realpathSync(value); } catch (err) { resolved = path.resolve(value); }
+    resolved = path.normalize(resolved).replace(/[\\/]+$/, '');
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(a) === normalize(b);
+}
+
 function isRegisteredWorktree(repoRoot, stagingPath) {
   const listed = listWorktrees(repoRoot);
   if (!listed.ok) return false;
-  let resolved;
-  try {
-    resolved = fs.realpathSync(stagingPath);
-  } catch (err) {
-    resolved = path.resolve(stagingPath);
-  }
-  return listed.paths.some((p) => {
-    let candidate = p;
-    try { candidate = fs.realpathSync(p); } catch (err) { /* keep as given */ }
-    return candidate === resolved;
-  });
+  return listed.paths.some((p) => samePath(p, stagingPath));
 }
 
 // Creates the tree, or reuses it when the affinity already has one. Reuse is
@@ -166,6 +171,7 @@ function stagingStatus(options) {
 }
 
 module.exports = {
+  samePath,
   flattenAffinity,
   stagingPathFor,
   listWorktrees,

@@ -79,6 +79,23 @@ for (const hostile of [
   check(path.dirname(resolved) === probeBase, 'a hostile affinity ("' + hostile + '") cannot leave the base directory');
 }
 
+// ---- path comparison, which CI proved cannot be exact-string ----
+//
+// A GitHub Windows runner reported a staging tree as unregistered even though
+// git had just created it: git's recorded path and ours differed in case and
+// short-path form. Comparison folds case on win32, as the filesystem does.
+
+check(staging.samePath(os.tmpdir(), os.tmpdir()), 'a path equals itself');
+check(!staging.samePath(os.tmpdir(), path.join(os.tmpdir(), 'nope-' + Date.now())),
+  'different paths are not equal');
+check(!staging.samePath(null, os.tmpdir()), 'a missing path never matches');
+check(staging.samePath(os.tmpdir(), os.tmpdir() + path.sep),
+  'a trailing separator does not change identity');
+if (process.platform === 'win32') {
+  check(staging.samePath(os.tmpdir().toUpperCase(), os.tmpdir().toLowerCase()),
+    'case is folded on Windows, as the filesystem does');
+}
+
 // ---- create, reuse, remove ----
 
 let repo = makeRepo();
