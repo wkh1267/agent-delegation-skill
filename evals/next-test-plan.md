@@ -831,6 +831,28 @@ user_working_tree_unchanged     True
 worktrees_remaining             1
 ```
 
+### A third breakage CI found that local runs structurally could not
+
+The staging tree's worktree matching passed locally and failed on the GitHub
+runner, and the first fix — case folding — was a guess that did not hold. Only
+after making the runner print the actual strings did the cause appear:
+
+```text
+staging   C:\Users\RUNNER~1\...       8.3 short form
+worktree  C:\Users\runneradmin\...    long form
+```
+
+`fs.realpathSync` resolves symlinks but does not expand Windows short names, so
+one directory canonicalised to two different strings. `realpathSync.native`
+does. Canonicalisation now has a single implementation, `canonicalPath` in
+`delegent-scope.js`, shared by the scope resolver, the Worker's read containment
+and the staging tree — three copies of a path rule that must agree is the shape
+of a boundary that quietly disagrees with itself.
+
+A dev machine where the short and long forms already agree cannot produce this
+failure at all. CI was the only place it could surface, which is worth
+remembering before treating a local green run as sufficient.
+
 ### Both predicted breakages were real
 
 The plan predicted the artifact paths would break, and they did — but a second,
