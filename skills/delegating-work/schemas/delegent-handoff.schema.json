@@ -44,7 +44,7 @@
     "decisions_needed": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Questions that require a Lead decision because they touch architecture, security, a public contract or an irreversible choice. One per item."
+      "description": "Decisions you must not make alone, because they touch architecture, security, a public contract or anything irreversible. One per item, and each must give the Lead what it needs to decide: the question, what you found that raises it, the options you can see with their trade-offs, and which you would choose and why. Restating the request as an instruction is not a decision; if all you can say is what to do, you have not escalated anything."
     },
     "review_targets": {
       "type": "array",
