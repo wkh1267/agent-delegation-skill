@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "question",
+    "evidence",
+    "options",
+    "recommendation",
+    "confidence"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["decision_needed"],
+      "description": "Always decision_needed. This schema is only for escalating a choice the Worker must not make alone."
+    },
+    "question": {
+      "type": "string",
+      "description": "The single decision the Lead has to make, stated as one question."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What was found that forces the decision: file paths, symbols, exact output lines. One item per observation."
+    },
+    "options": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The distinct options considered, one per item, each with its trade-off."
+    },
+    "recommendation": {
+      "type": "string",
+      "description": "Which option the Worker recommends, and why in one or two sentences."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "Confidence in the recommendation."
+    }
+  }
+}

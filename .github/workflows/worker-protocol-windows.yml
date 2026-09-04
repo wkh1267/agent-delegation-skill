@@ -1,0 +1,52 @@
+name: Worker Protocol Windows
+
+on:
+  push:
+    branches:
+      - feat/delegent-v0.1
+  pull_request:
+
+jobs:
+  powershell-51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run fake-only Worker protocol tests
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          function Invoke-TestScript {
+            param([string]$Path)
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $Path
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Path failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          Invoke-TestScript .\evals\test-worker-protocol.ps1
+          Invoke-TestScript .\evals\test-terminal-tool-catalog.ps1
+          Invoke-TestScript .\evals\test-terminal-tool-discovery-config.ps1
+          Invoke-TestScript .\evals\test-codex-nim-bootstrap.ps1
+          Invoke-TestScript .\evals\test-codex-nim-smoke-assets.ps1
+          Invoke-TestScript .\evals\test-codex-nim-stream-error-classifier.ps1
+          Invoke-TestScript .\evals\test-delegent-handoff-mcp.ps1
+          Invoke-TestScript .\evals\test-codex-windows-sandbox-diagnostic-assets.ps1
+          Invoke-TestScript .\evals\test-codex-powershell-profile-gap-assets.ps1
+
+          node .\evals\test-delegent-boundary.js
+          if ($LASTEXITCODE -ne 0) { throw 'evals/test-delegent-boundary.js failed' }
+
+          node .\evals\test-delegent-mutation.js
+          if ($LASTEXITCODE -ne 0) { throw 'evals/test-delegent-mutation.js failed' }
+
+          node .\evals\test-delegent-staging.js
+          if ($LASTEXITCODE -ne 0) { throw 'evals/test-delegent-staging.js failed' }
+
+          node .\evals\test-delegent-sandbox.js
+          if ($LASTEXITCODE -ne 0) { throw 'evals/test-delegent-sandbox.js failed' }
+
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\evals\diagnose-terminal-plugin.ps1), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          Write-Output 'PASS terminal plugin diagnostic syntax'

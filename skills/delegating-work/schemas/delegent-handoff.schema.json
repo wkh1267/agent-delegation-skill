@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "evidence",
+    "changes",
+    "tests",
+    "risks",
+    "decisions_needed",
+    "review_targets"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked"],
+      "description": "completed when the delegated scope is finished; blocked when it cannot proceed without the Lead."
+    },
+    "summary": {
+      "type": "string",
+      "description": "What was done, in a few sentences. No intermediate reasoning and no transcript."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Concrete observations that justify the summary: file paths, symbols, exact output lines. One item per observation."
+    },
+    "changes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Files actually modified, one path per item. Empty when nothing was modified."
+    },
+    "tests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tests or checks actually run and their outcome, one per item. Empty when none were run."
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Known risks, gaps or uncertainties the Lead should weigh, one per item."
+    },
+    "decisions_needed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Decisions you must not make alone, because they touch architecture, security, a public contract or anything irreversible. One per item, and each must give the Lead what it needs to decide: the question, what you found that raises it, the options you can see with their trade-offs, and which you would choose and why. Restating the request as an instruction is not a decision; if all you can say is what to do, you have not escalated anything."
+    },
+    "review_targets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Specific places the Lead should review first, one per item."
+    }
+  }
+}
