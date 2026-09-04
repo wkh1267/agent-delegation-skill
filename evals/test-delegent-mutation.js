@@ -311,6 +311,35 @@ const cliBadScope = runVerifyCli({ scope: {}, reportedChanges: [], observedStatu
 check(cliBadScope.exitCode === 2 && cliBadScope.verdict.ok === false,
   'the verify CLI refuses an empty scope distinctly from a failed verification');
 
+// ---- the delegent entry point's plan() ----
+//
+// Only plan() is checked here: everything under it is already covered by the
+// module tests, and the entry point deliberately adds no logic of its own beyond
+// this branching.
+
+const { plan } = require(path.join(toolsDir, 'delegent.js'));
+
+const readOnly = plan({ repo: '.', task: 'look around', scopePrefixes: [], scopePaths: [] });
+check(readOnly.ok && readOnly.mutating === false, 'no declared scope plans a read-only run');
+check(readOnly.scope === null, 'a read-only plan carries no scope');
+check(readOnly.sessionDir === null, 'a read-only plan needs no session directory');
+
+const mutating = plan({
+  repo: '.', task: 'edit', scopePrefixes: ['docs'], scopePaths: [], session: 'delegent:p:s:r'
+});
+check(mutating.ok && mutating.mutating === true, 'a declared scope plans a mutating run');
+check(mutating.scope.prefixes[0] === 'docs', 'the plan carries the parsed scope');
+
+// A mutating run needs an affinity, because the staging tree is keyed by it.
+check(!plan({ repo: '.', task: 'edit', scopePrefixes: ['docs'], scopePaths: [] }).ok,
+  'a mutation scope without an affinity is refused');
+check(!plan({ repo: '.', task: '', scopePrefixes: [], scopePaths: [] }).ok, 'an empty task is refused');
+check(!plan({ task: 'x', scopePrefixes: [], scopePaths: [] }).ok, 'a missing repo is refused');
+check(!plan({ repo: '.', task: 'x', scopePrefixes: ['docs/**'], scopePaths: [], session: 's' }).ok,
+  'a glob scope is refused at the entry point too');
+check(!plan({ repo: '.', task: 'x', scopePrefixes: [], scopePaths: [], unknown: '--nope' }).ok,
+  'an unknown option is refused rather than ignored');
+
 if (failures === 0) {
   process.stdout.write('PASS Delegent mutation boundary ' + checks + ' assertions' +
     (symlinkTested ? ' (incl. symlink writes)' : ' (symlink arms skipped)') + '\n');

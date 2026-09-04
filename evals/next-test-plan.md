@@ -73,7 +73,7 @@ D4a Scope matching + write tool + verifier (no model)   PASS 88 assertions
 D4b Staging tree lifecycle (no model)                   PASS 53 assertions
 D4c Live controlled mutation gate                       PASS 3/3
 D4d codex sandbox wrapper                               PASS
-D5  Production-candidate Delegent Worker adapter
+D5  Delegent entry point (delegent.js)                  PASS
 D6  Shell tool + real isolation                         SEPARATE GATE
 
 N8  Codex/NIM vs direct-NIM vs OpenCode bake-off
@@ -885,6 +885,52 @@ This is also why the enforcement precheck grew the network arm: without it, a
 misconfigured backend surfaces as provider retries rather than as one line
 saying the sandbox is unusable.
 
+## D5 — the entry point — PASS
+
+```text
+node skills/delegating-work/tools/delegent.js
+  --repo <dir> --task "..." [--scope-prefix docs] [--session <affinity>]
+```
+
+One command runs the whole pipeline: staging tree, sandbox verification,
+sandboxed Worker, observed diff, three-way verification, validated handoff.
+
+### Two things this gate did NOT do, deliberately
+
+**It did not consolidate the PowerShell validators.** The plan said D5 was where
+they would, and that was wrong. Those validators are *independent oracles*: a
+gate must not trust the component it tests, which is exactly why the live gates
+re-validate in PowerShell what the runtime validated in JS. Merging them into the
+product would delete that property on purpose. The three PS copies are
+copy-paste, but the independence that matters is JS-vs-PowerShell, and that
+survives.
+
+**It added no adapter abstraction.** Everything underneath already existed as
+tested modules with CLIs, so the entry point only sequences them — no interface,
+no factory, no config layer. It is orchestration in node rather than PowerShell
+because every module it drives is already node, which removes the BOM, quoting
+and `@($null).Count` traps from the production path entirely.
+
+### Shape
+
+Read-only is the default. Declaring a mutation scope is what turns on the staging
+tree and the sandbox, because both exist to contain writes and there are no
+writes without a scope. A mutation scope without an affinity is refused, since
+the staging tree is keyed by it.
+
+The staging tree is **left in place** and its path returned. The Lead reviews the
+diff and accepts; committing and cleanup are the Lead's, and a sandboxed Worker
+could not commit anyway.
+
+### Live result
+
+```text
+read-only   handoff validated, staging_tree=null, repo untouched
+mutating    wrote docs/d5-smoke.md in the staging tree, reported it,
+            verdict ok, containmentBreach=false, reportingMismatch=false,
+            user working tree untouched, change visible only in the staging tree
+```
+
 ## D3 — mutation boundary — DECIDED, see ADR-0003
 
 Settled by [ADR-0003](../docs/decisions/0003-mutation-boundary.md) on
@@ -1079,12 +1125,16 @@ D1, D1b, D2 and the whole D4 series now pass, so the Worker explores, mutates
 inside a declared scope, reports through the validated boundary, carries context
 across turns, and does all of it inside a verified sandbox.
 
-**Next: D5, the production-candidate adapter**, which is where the duplicated
-PowerShell schema validators across the live gates finally consolidate. D2b (an
-injectable transport, so the provider-retry path becomes testable rather than
-only observed) is still open and cheap. D6, the shell tool, stays a separate gate
-and needs its own decision: the sandbox scopes writes only, leaving reads and
-network open, so it does nothing about exfiltration.
+D5 now gives a Lead one command to delegate a task, so the runtime is usable
+rather than only testable.
+
+**Next: N8, the bake-off**, comparing this runtime against the Codex/NIM and
+OpenCode arms on the same controlled tasks — both are retained for exactly this.
+Then N9 composition. D2b (an injectable transport, so the provider-retry path
+becomes testable rather than only observed) is still open and cheap. D6, the
+shell tool, stays a separate gate needing its own decision: the sandbox scopes
+writes only, leaving reads and network open, so it does nothing about
+exfiltration.
 
 Before starting, re-confirm the proven layers still hold on this machine:
 
