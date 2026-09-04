@@ -92,6 +92,16 @@ a doubled-backslash path that no longer resolves.
 UV_HANDLE_CLOSING)` in `async.c`, which hides the real outcome.
 → Set `process.exitCode` and let the loop unwind. Read stdin asynchronously.
 
+**`fs.realpathSync` does not expand Windows 8.3 short names.** It resolves
+symlinks only, so `C:\Users\RUNNER~1\...` and `C:\Users\runneradmin\...` — the
+same directory — canonicalise to two different strings, and any containment or
+identity check comparing them answers "different". CI hits this because a
+runner's `TEMP` is the short form while git reports the long one; a dev machine
+where both already agree never sees it.
+→ Use `fs.realpathSync.native`, which asks Windows for the final name.
+`canonicalPath` in `delegent-scope.js` is the one implementation; every
+containment check goes through it.
+
 **Codex `doctor --json` is a redacted report.** An enabled Windows sandbox
 backend comes back as the literal string `<redacted>`, while `disabled` prints
 verbatim — so matching on a backend name can never succeed.
