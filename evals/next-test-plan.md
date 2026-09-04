@@ -76,7 +76,7 @@ D4d codex sandbox wrapper                               PASS
 D5  Delegent entry point (delegent.js)                  PASS
 D6  Shell tool + real isolation                         SEPARATE GATE
 
-N8  Codex/NIM vs direct-NIM vs OpenCode bake-off
+N8  Runtime bake-off                                    CLOSED by the gates
 N9  Controlled Delegent composition (B1/B2 equivalent)
 
 C.  Matt implement integration (+ tdd/code-review)      WAITING ON N9
@@ -1034,9 +1034,45 @@ skills/delegating-work/schemas/delegent-decision.schema.json
 
 Do not reimplement Codex's tool loop, repository tools, sandbox, or session storage.
 
-## N8 — runtime bake-off
+## N8 — runtime bake-off — CLOSED without running one
 
-Compare the frozen OpenCode baseline and Codex/NIM on the same controlled Worker tasks. Correctness and protocol reliability dominate small latency differences.
+The gates already decided it. N8's own criterion is "correctness and protocol
+reliability", and on the one non-negotiable — delivering a validated handoff —
+two of the three arms score zero, each for a reason already proven:
+
+```text
+direct NIM   D1-D5 pass end to end, read and mutate, sandboxed
+Codex/NIM    N4 blocked on both mechanisms: --output-schema is not enforced by
+             this provider (8/10 at the provider, 1/7 usable through codex) and
+             Codex never exposes an MCP tool to the model on it  (ADR-0002)
+OpenCode     A.7 paused on terminal_tools_unavailable, and this plan already
+             says: "Do not run another OpenCode A.7"
+```
+
+Running three arms on one task to rediscover that two cannot complete it would
+spend live turns on a foregone conclusion, and the OpenCode arm would contradict
+a standing instruction in this document.
+
+The comparison a later reader wants is not a benchmark score. It is: the other
+two cannot cross the machine boundary at all, and that boundary is the thing
+Delegent cannot compromise. A latency table would not change that, which is why
+N8 itself said latency does not dominate.
+
+**Nothing is deleted.** All three arms stay, with their probes green, because
+they are the regression evidence and the re-entry path.
+
+### What would re-open it
+
+One condition, and it is specific: **a Codex release that exposes MCP tools to a
+custom-provider model.** That is the single thing that failed, the parked
+`delegent-handoff-mcp.js` and its five rejection controls are what to retry with,
+and `run-codex-nim-repo-read.ps1` proves the rest of that arm still works.
+
+OpenCode re-opens only if someone wants to spend time on
+`terminal_tools_unavailable`, which this plan has already declined twice.
+
+A latency or cost comparison, if ever wanted, is cheap to add later against
+`delegent.js` — but it is a product question, not a runtime-selection one.
 
 ## N9 — controlled Delegent composition
 
@@ -1047,12 +1083,16 @@ B1 trivial task
   -> Lead may keep locally
 
 B2 context-heavy task
-  -> Codex/NIM Worker
+  -> direct NIM Worker via delegent.js
   -> validated compact handoff
   -> Lead review / acceptance
 ```
 
-Codex/NIM becomes the preferred V0.1 Worker runtime only after this composition gate passes.
+The direct NIM runtime becomes the accepted V0.1 Worker runtime only after this
+composition gate passes. Everything before it proved the runtime works in
+isolation; N9 is the first gate that asks whether *Delegent* works -- placement,
+the Context Firewall, escalation, and Lead acceptance -- with the runtime merely
+underneath it.
 
 ## Runtime pivot rule
 
@@ -1060,8 +1100,8 @@ Current status, after the 2026-09-03 pivot:
 
 ```text
 Delegent core      = accepted
-Direct NIM runtime = selected; D1 proven, D2 next
-Codex+NIM runtime  = working baseline; N0-N3 proven, N4 boundary blocked
+Direct NIM runtime = selected; D1-D5 proven, N9 next
+Codex+NIM runtime  = retained arm; N0-N3 proven, N4 boundary blocked
 OpenCode runtime   = frozen baseline/fallback
 ```
 
@@ -1128,9 +1168,10 @@ across turns, and does all of it inside a verified sandbox.
 D5 now gives a Lead one command to delegate a task, so the runtime is usable
 rather than only testable.
 
-**Next: N8, the bake-off**, comparing this runtime against the Codex/NIM and
-OpenCode arms on the same controlled tasks — both are retained for exactly this.
-Then N9 composition. D2b (an injectable transport, so the provider-retry path
+**Next: N9, controlled composition.** N8 is closed without running one: two of
+its three arms provably cannot deliver a validated handoff, so a head-to-head
+would spend live turns on a foregone conclusion. See the N8 section for the
+single condition that re-opens it. D2b (an injectable transport, so the provider-retry path
 becomes testable rather than only observed) is still open and cheap. D6, the
 shell tool, stays a separate gate needing its own decision: the sandbox scopes
 writes only, leaving reads and network open, so it does nothing about
